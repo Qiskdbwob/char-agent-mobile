@@ -1,6 +1,6 @@
 [project]
 name = "jenny"
-version = "0.7.2"
+version = "0.7.3"
 description = "Jenny - AI agent framework (fork of nanobot)"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
