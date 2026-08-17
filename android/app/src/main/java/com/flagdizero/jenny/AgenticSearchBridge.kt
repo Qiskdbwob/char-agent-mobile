@@ -65,6 +65,11 @@ class AgenticSearchBridge(context: Context) {
         // (SPA, click no-op) si esce comunque dopo questo tempo invece di
         // tenere il turno dell'agente fermo per l'intero timeout.
         private const val ACTION_SETTLE_SECONDS = 4L
+
+        // Tetto per la creazione della WebView sul main thread: in condizioni
+        // normali richiede qualche decina di ms; il cap esiste solo per non
+        // bloccare un thread Python per sempre se il main looper è occupato.
+        private const val WEBVIEW_INIT_TIMEOUT_SECONDS = 10L
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -193,8 +198,56 @@ class AgenticSearchBridge(context: Context) {
         return blocked
     }
 
+    /**
+     * Garantisce che la WebView esista, creandola sul main thread.
+     *
+     * Il bridge è chiamato da thread Python (Chaquopy) privi di Looper, ma
+     * `WebView` si può costruire SOLO su un thread con Looper
+     * ("WebView cannot be initialized on a thread that has no Looper" — il
+     * bug che ha rotto web_search/web_fetch a 0.7.2). La creazione viene
+     * quindi postata sul main looper e l'attesa avviene QUI, sul thread
+     * chiamante: durante una chiamata del bridge il main thread è libero
+     * (l'UI aspetta la risposta via WebSocket), quindi il latch non può
+     * deadlockare. Se il chiamante è già il main thread, si crea inline.
+     */
     private fun ensureWebView() {
         if (webView != null) return
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            createWebView()
+            return
+        }
+        val latch = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>(null)
+        handler.post {
+            try {
+                // Doppio check: il post è asincrono, e nel frattempo un'altra
+                // chiamata (serializzata dal lock Python) può averla creata.
+                if (webView == null) createWebView()
+            } catch (t: Throwable) {
+                failure.set(t)
+            } finally {
+                latch.countDown()
+            }
+        }
+        val completed = try {
+            latch.await(WEBVIEW_INIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        val err = failure.get()
+        if (err != null) {
+            throw RuntimeException("WebView initialization failed on main thread", err)
+        }
+        if (!completed) {
+            throw RuntimeException(
+                "Timed out waiting for WebView initialization on the main thread"
+            )
+        }
+    }
+
+    /** Crea la WebView nascosta; va chiamata SOLO sul main thread. */
+    private fun createWebView() {
         // Remote debugging (chrome://inspect) SOLO su build debuggable. Il
         // flag non è condizionato da `android:debuggable` — va esplicito — e su
         // una build di release esporrebbe il DOM di TUTTI i WebView del
