@@ -55,12 +55,17 @@ jobs:
       # Il runner lo decodifica in un path temporaneo, che Gradle legge via
       # JENNY_KEYSTORE_PATH. Secret assente → file assente → release unsigned
       # (hasReleaseSigning in build.gradle.kts controlla l'esistenza del file).
+      # NB: niente `secrets` nell'if di step (context non ammesso): si usa una
+      # guardia shell dentro lo step, con il secret passato via env.
       - name: Prepare signing keystore
-        if: ${{ secrets.JENNY_KEYSTORE_B64 != '' }}
         env:
           JENNY_KEYSTORE_B64: ${{ secrets.JENNY_KEYSTORE_B64 }}
         run: |
           set -euo pipefail
+          if [ -z "${JENNY_KEYSTORE_B64:-}" ]; then
+            echo "no signing secret: release will be unsigned"
+            exit 0
+          fi
           echo "$JENNY_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/jenny-release.jks"
           chmod 600 "$RUNNER_TEMP/jenny-release.jks"
           test -s "$RUNNER_TEMP/jenny-release.jks"
@@ -79,9 +84,9 @@ jobs:
 
       # Il manifest dell'updater in-app (latest.json) vive SOLO su APK
       # firmato: un APK unsigned non è installabile dall'updater, quindi non ha
-      # senso pubblicare un manifest che lo punti. Guard sul secret di firma.
+      # senso pubblicare un manifest che lo punti. La presenza di
+      # app-release.apk (nome dell'output firmato) è la guardia naturale.
       - name: Generate update manifest
-        if: ${{ secrets.JENNY_KEYSTORE_B64 != '' }}
         env:
           TAG: ${{ github.ref_name }}
         run: |
