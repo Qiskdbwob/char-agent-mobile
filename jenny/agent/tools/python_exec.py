@@ -12,6 +12,7 @@ import logging
 import os  # solo per os.fsdecode / os.sep / os.path.* — helper puri, mai patchati
 import shutil
 import sys
+import sysconfig
 import threading
 import traceback
 import types
@@ -569,6 +570,90 @@ def _is_runtime_path(logical_path: str, *, allow_ancestors: bool = False) -> boo
         if _is_within_prefix(logical_path, prefix):
             return True
         if allow_ancestors and _is_within_prefix(prefix, logical_path):
+            return True
+    return False
+
+
+_interpreter_probe_prefixes_cache: tuple[str, ...] | None = None
+
+
+def _interpreter_probe_prefixes() -> tuple[str, ...]:
+    """Directory che l'interprete possiede e che il suo macchinario sonda.
+
+    Le voci di ``sys.path`` più i percorsi di ``sysconfig`` (stdlib, site,
+    purelib, platlib, userbase, …): importlib li percorre per risolvere gli
+    import e coverage li ripercorre — ``realpath`` compreso, componente per
+    componente — a ogni cambio di ``sys.path``. Sono directory dell'install,
+    non dati dell'utente, e un rifiuto lì è quasi sempre una sonda del
+    macchinario, non un accesso del codice guardato.
+    """
+    global _interpreter_probe_prefixes_cache
+    if _interpreter_probe_prefixes_cache is None:
+        prefixes: list[str] = []
+        seen: set[str] = set()
+        for entry in sys.path:
+            if not entry:
+                continue
+            try:
+                abs_entry = os.path.abspath(entry)
+            except (OSError, ValueError):
+                continue
+            if os.path.isabs(abs_entry) and abs_entry not in seen:
+                seen.add(abs_entry)
+                prefixes.append(abs_entry)
+        try:
+            for scheme in sysconfig.get_scheme_names():
+                for value in sysconfig.get_paths(scheme).values():
+                    if not value:
+                        continue
+                    try:
+                        abs_value = os.path.abspath(os.path.expanduser(value))
+                    except (OSError, ValueError):
+                        continue
+                    if os.path.isabs(abs_value) and abs_value not in seen:
+                        seen.add(abs_value)
+                        prefixes.append(abs_value)
+        except Exception:
+            # sysconfig può fallire su interpreti minimi: si perdono solo le
+            # voci extra, quelle di sys.path restano.
+            pass
+        _interpreter_probe_prefixes_cache = tuple(prefixes)
+    return _interpreter_probe_prefixes_cache
+
+
+def _is_plumbing_probe(logical_path: str, boundary: str) -> bool:
+    """True se *logical_path* è una sonda del macchinario dell'interprete.
+
+    Il macchinario dell'import (``importlib``/``PathFinder``), ``realpath``/
+    ``Path.resolve`` e strumenti di misura come coverage sondano, per lavorare,
+    percorsi che stanno FUORI dal workspace: le voci di ``sys.path`` e di
+    ``sysconfig`` (la directory del runner, site-packages, la radice del repo
+    in un editable install), i loro discendenti (un modulo dentro
+    site-packages) e i loro antenati (la camminata di ``pyvenv.cfg``/
+    ``realpath`` sale componente per componente). Sono sonde read-only che il
+    codice guardato non ha mai nominato: il confine le RIFIUTA uguale —
+    l'``OSError`` che solleviamo è ciò che la stdlib si aspetta — ma annotarle
+    come rifiuti sputerebbe una raffica di avvisi su percorsi che non c'entrano
+    nulla. È la stessa classe di rumore che il bypass in
+    ``_resolves_within_workspace`` già zittisce per ``Path.resolve``, qui
+    estesa a chiunque altro sonda le directory dell'interprete sul thread
+    guardato (coverage le ripercorre a ogni cambio di ``sys.path``).
+    """
+    # Antenati del confine — e i loro figli (la camminata di ``pyvenv.cfg``):
+    # realpath/makedirs/coverage salgono oltre la radice del workspace per
+    # verificare i symlink dei componenti.
+    if _is_within_prefix(boundary, logical_path) or _is_within_prefix(
+        boundary, os.path.dirname(logical_path)
+    ):
+        return True
+    for prefix in _interpreter_probe_prefixes():
+        if logical_path == prefix:
+            return True
+        # Antenato di un prefisso (pyvenv.cfg, realpath) o discendente (un
+        # file dentro site-packages): entrambi sonda dell'interprete.
+        if _is_within_prefix(prefix, logical_path):
+            return True
+        if _is_within_prefix(logical_path, prefix):
             return True
     return False
 
@@ -1782,13 +1867,23 @@ class PythonNamespace:
                     allowed_root=boundary,
                 )
             except WorkspaceBoundaryError:
-                logger.warning(
-                    "python_exec: refused %s outside the workspace boundary %s: %s",
-                    op,
-                    boundary,
-                    raw,
-                )
-                _record_boundary_refusal(op, raw)
+                # Le sonde di esistenza del macchinario dell'interprete
+                # (stat/lstat su voci di sys.path e loro parentele) restano
+                # RIFIUTATE — l'OSError è il contratto con la stdlib — ma
+                # senza avviso né annotazione: l'agente non ha nominato quei
+                # percorsi, e annotarli trasformerebbe ogni import sotto
+                # coverage in una raffica di rifiuti (vedi
+                # ``_is_plumbing_probe``).
+                if op not in _RUNTIME_ANCESTOR_OPS or not _is_plumbing_probe(
+                    logical, boundary
+                ):
+                    logger.warning(
+                        "python_exec: refused %s outside the workspace boundary %s: %s",
+                        op,
+                        boundary,
+                        raw,
+                    )
+                    _record_boundary_refusal(op, raw)
                 raise
             return logical
 
