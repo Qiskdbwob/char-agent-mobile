@@ -22,7 +22,7 @@ Jenny is an Android-only AI agent framework focused on:
 | Bridge / gateway bridge | No multi-process orchestration needed. |
 | Shell / sandbox exec | Replaced by `python_exec` tool. |
 | HTTP-based web tools | Replaced by Android WebView-backed `android_web.py` tools. |
-| MCP client integration | SDK transports unavailable on Android; removed entirely. |
+| MCP client integration | Official SDK (pydantic v2 + Rust components) unavailable on Android; replaced with a minimal hand-rolled **tools-only** Streamable HTTP client (`jenny/mcp/`) — no external dependency beyond `httpx`. |
 | Git-backed Dream history | `dulwich` unavailable on Android; removed. |
 | Desktop/browser fallbacks | Android is the only supported runtime target. |
 | Removed providers (if any pruned during fork) | Kept only providers actively tested. |

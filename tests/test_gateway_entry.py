@@ -64,6 +64,43 @@ def test_run_gateway_retries_after_a_system_exit(
     assert len(calls) == 2
 
 
+def test_run_gateway_resets_bridge_state_on_every_retry_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Il blocco di reset vive DENTRO il loop di retry: ogni tentativo riparte
+    con primitive asyncio nuove, non con quelle legate al loop morto del
+    tentativo precedente (classe di bug R6, vedi
+    tests/runtime/test_loop_bound_globals.py). Un reset eseguito una sola volta
+    all'ingresso lascerebbe l'attempt 2 su un loop nuovo con i lock
+    dell'attempt 1: alla prima contesa "bound to a different event loop" per
+    power/android_web/notifier, dove un await sta dentro la sezione critica."""
+    monkeypatch.setattr(get_runtime_context(), "workspace_dir", None)
+    monkeypatch.setattr("jenny.android_entry.RETRY_DELAY_S", 0)
+
+    events: list[str] = []
+    runs: list[int] = []
+
+    def _fake_reset() -> None:
+        events.append("reset")
+
+    monkeypatch.setattr(
+        "jenny.agent.tools.android_web.reset_android_web_state", _fake_reset
+    )
+
+    async def _fake_run(**_kwargs):
+        runs.append(1)
+        events.append("run")
+        if len(runs) == 1:
+            raise SystemExit(2)
+
+    with patch("jenny.gateway_runtime._run_gateway", new=_fake_run):
+        run_gateway(str(tmp_path), host="127.0.0.1", port=18004)
+
+    assert len(runs) == 2
+    # reset prima di OGNI tentativo, non solo del primo.
+    assert events == ["reset", "run", "reset", "run"]
+
+
 def test_run_gateway_reraises_after_max_retries_of_base_exception(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

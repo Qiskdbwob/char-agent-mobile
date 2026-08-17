@@ -458,6 +458,28 @@ class AgentLoop(StateHandlersMixin, ProviderPresetMixin, TurnPersistenceMixin, L
         if app_tools:
             registered.append(f"apps:{len(app_tools)}")
 
+        # MCP server tools — server dichiarati in Settings, discovery alla
+        # registrazione (stesso momento di AppToolsSyncer). Un server rotto
+        # viene saltato da sync_mcp_tools, mai un errore che butta giù il
+        # gateway; i nomi (mcp__<server>__<tool>) sono unici per costruzione.
+        from jenny.mcp.manager import sync_mcp_tools
+
+        mcp_cfg = getattr(self.tools_config, "mcp", None)
+        try:
+            mcp_tools = sync_mcp_tools(mcp_cfg)
+        except Exception:
+            logger.exception("MCP tool discovery failed")
+            mcp_tools = []
+        for tool in mcp_tools:
+            if self.tools.has(tool.name):
+                logger.warning(
+                    "MCP tool '{}' collides with an existing tool; skipped", tool.name
+                )
+                continue
+            self.tools.register(tool)
+        if mcp_tools:
+            registered.append(f"mcp:{len(mcp_tools)}")
+
         logger.info("Registered {} tools: {}", len(registered), registered)
 
     def _set_tool_context(

@@ -216,8 +216,7 @@ def _parse_search_response(raw: str) -> list[dict[str, Any]]:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         logger.warning("Android web_search returned non-JSON: {}", raw[:200])
-        if _looks_like_captcha(raw):
-            raise ValueError("Bing returned a verification/CAPTCHA page") from exc
+        _raise_for_bot_page(raw)
         raise ValueError(f"Invalid search response: {exc}") from exc
     # evaluateJavascript JSON-encodes the JS string return value, so the
     # payload arrives double-encoded (same as _bridge_fetch handles).
@@ -225,8 +224,7 @@ def _parse_search_response(raw: str) -> list[dict[str, Any]]:
         try:
             data = json.loads(data)
         except json.JSONDecodeError as exc:
-            if _looks_like_captcha(data):
-                raise ValueError("Bing returned a verification/CAPTCHA page") from exc
+            _raise_for_bot_page(data)
             raise ValueError(f"Invalid search response: {exc}") from exc
     if isinstance(data, dict) and "error" in data:
         raise ValueError(str(data["error"]))
@@ -238,8 +236,7 @@ def _parse_search_response(raw: str) -> list[dict[str, Any]]:
             )
         if not results:
             page_text = str(data.get("pageText", ""))
-            if _looks_like_captcha(page_text):
-                raise ValueError("Bing returned a verification/CAPTCHA page")
+            _raise_for_bot_page(page_text)
         return results
     raise ValueError(f"Unexpected search response type: {type(data).__name__}")
 
@@ -280,6 +277,46 @@ def _looks_like_captcha(text: str) -> bool:
     if any(marker in lower for marker in _CAPTCHA_TEXT_MARKERS):
         return True
     return any(marker in lower for marker in _CAPTCHA_STRUCTURAL_MARKERS)
+
+
+# Marker delle pagine di consenso cookie / redirect regionale di Bing
+# (consent.bing.com). Distinte dalle CAPTCHA di proposito: il modello deve
+# capire che qui non c'è un blocco automatico da aggirare, ma una pagina che
+# un utente può sbloccare da un browser vero. Si controllano SOLO quando la
+# SERP è vuota o non decodificabile (stessa condizione di _looks_like_captcha),
+# quindi un footer innocuo su una pagina di risultati vera non può innescarli.
+_CONSENT_TEXT_MARKERS = (
+    "consent.bing.com",
+    "manage cookie preferences",
+    "choose your preferences",
+    "your privacy settings",
+    "we're updating our terms",
+    "cookie consent",
+)
+
+
+def _looks_like_consent(text: str) -> bool:
+    """Return True if the raw response looks like a consent/privacy page."""
+    if not text:
+        return False
+    lower = text.lower()
+    return any(marker in lower for marker in _CONSENT_TEXT_MARKERS)
+
+
+def _raise_for_bot_page(text: str) -> None:
+    """Solleva ValueError se *text* sembra una pagina di blocco del motore.
+
+    Due famiglie distinte: una CAPTCHA (verifica umana, il modello non può farci
+    niente) e una pagina di consenso cookie / redirect regionale (l'utente può
+    agire). Entrambe significano "la SERP non c'è", ma la diagnosi da dare al
+    modello è diversa, quindi l'errore lo dice esplicitamente.
+    """
+    if _looks_like_captcha(text):
+        raise ValueError("Bing returned a verification/CAPTCHA page")
+    if _looks_like_consent(text):
+        raise ValueError(
+            "Bing returned a consent/privacy page (cookie consent or regional redirect)"
+        )
 
 
 async def _bridge_fetch(context: Any, url: str, timeout: int = 30) -> tuple[str, str]:

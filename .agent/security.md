@@ -30,7 +30,15 @@ As a related safeguard, `server.auth` is **fail-closed**: when an app declares i
 
 `validate_ssh_target` (`security/network.py`), backed by `_SSH_BLOCKED_NETWORKS`, allows RFC1918, IPv6 ULA **and** CGNAT (`100.64.0.0/10`), blocking only `0.0.0.0/8`, loopback and link-local/metadata. CGNAT is allowed here rather than through `configure_ssrf_whitelist` on purpose: the whitelist is global, so opening it for Tailscale would also open CGNAT to `web_fetch` and to Jenny Apps — a narrow permission in one policy beats a wide one across all three. What backs the extra room is that an SSH host is user-typed in Settings and host-key pinned before any connection, not that SSH is inherently safer.
 
-**Rule**: Loopback stays blocked in all three policies — it is the phone itself, and the gateway's own API lives there.
+**Rule**: Loopback stays blocked in all four policies — it is the phone itself, and the gateway's own API lives there.
+
+### MCP server policy (a fourth one, same shape as SSH)
+
+`validate_mcp_target` (`security/network.py`), backed by the same `_SSH_BLOCKED_NETWORKS`, allows RFC1918, IPv6 ULA **and** CGNAT — an MCP server on a LAN device or over Tailscale is the normal use case, exactly like an SSH host. Blocked: `0.0.0.0/8`, loopback and link-local/metadata.
+
+The loopback check runs **before** the SSRF whitelist, for the same reason as SSH: `ssrfWhitelist` must not be able to reopen the phone. The check runs twice on purpose — at save time in Settings (immediate error to the user) and again at discovery/connection time (covers a name that starts resolving to a blocked address later, DNS rebinding).
+
+**Rule**: MCP targets are user-typed in Settings (never model-supplied — the agent can only call tools of servers the user declared), and the policy must stay as strict as SSH: no loopback, no link-local/metadata, no `0.0.0.0/8`.
 
 ## Telegram pairing oracle
 

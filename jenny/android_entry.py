@@ -85,59 +85,6 @@ def run_gateway(
         # get_recent_logs resta degradato). Logghiamo invece di ingoiare muto.
         logger.opt(exception=True).debug("Could not install in-memory log buffer")
 
-    # Reset Android-only bridge state so a fresh gateway start cannot inherit
-    # a stale bridge or locked asyncio state from a previous crashed loop.
-    # Tutti i bridge (web-search + installed-apps + notifier + location + power
-    # + ssh + updater) vengono resettati qui, simmetricamente, insieme alle
-    # altre primitive asyncio tenute in globali di modulo (config store, lock
-    # del controllo aggiornamenti, registro dei job SSH).
-    try:
-        from jenny.agent.tools.android_web import reset_android_web_state
-        from jenny.agent.tools.ssh_jobs import reset_job_store
-        from jenny.agent.tools.ssh_transport import reset_ssh_backend
-        from jenny.config.store import reset_config_store_state
-        from jenny.runtime.location import reset_location_state
-        from jenny.runtime.notifier import reset_notifier_state
-        from jenny.runtime.power import reset_power_state
-        from jenny.runtime.update_install import reset_install_state
-        from jenny.webui.android_apps_api import reset_installed_apps_state
-        from jenny.webui.settings_api import reset_update_check_state
-
-        reset_android_web_state()
-        reset_installed_apps_state()
-        reset_notifier_state()
-        reset_location_state()
-        # L'updater tiene una fase *sticky* e un ``UpdateBridge`` in cache: senza
-        # questo reset un gateway che riparte nello stesso processo mostrerebbe
-        # la fase del run precedente (e rifiuterebbe di installare, credendo di
-        # aver già committato) parlando per giunta a un context ormai morto.
-        reset_install_state()
-        # Il power manager tiene refcount e wakelock: ereditare la contabilità
-        # di un loop morto farebbe credere di tenere un lock che non c'è più.
-        reset_power_state()
-        # Il backend SSH tiene il pool di sessioni: ereditarlo da un loop morto
-        # lascerebbe connessioni legate a un event loop che non esiste più.
-        reset_ssh_backend()
-        # Il registro dei job SSH è un singleton di modulo il cui lock resta
-        # preso *durante* l'exec remoto: due poll concorrenti si accodano
-        # davvero, e questo lega il lock al loop. Senza reset, dopo un restart
-        # in-process ogni operazione sui job SSH morirebbe con "bound to a
-        # different event loop"; lo stato vero sta su file, qui si scorda solo
-        # la cache.
-        reset_job_store()
-        # Il lock delle scritture di config.json vive in una globale di modulo
-        # e tutte le ~16 scritture ci passano: se resta legato al loop
-        # precedente, config.json diventa di sola lettura per il resto della
-        # vita del processo.
-        reset_config_store_state()
-        # Il controllo aggiornamenti tiene il suo lock attraverso la rete: se
-        # il loop muore lì in mezzo, la guardia ``locked()`` risponde ``busy``
-        # per sempre e il bottone resta morto.
-        reset_update_check_state()
-    except Exception:
-        # Non-fatale: al peggio si eredita un bridge stale (verrà ricreato).
-        logger.opt(exception=True).debug("Could not reset Android bridge state")
-
     data_path = Path(data_dir)
     workspace_path = data_path / "workspace"
     workspace_dir = str(workspace_path)
@@ -191,8 +138,85 @@ def run_gateway(
             "Could not ensure default config — relying on existing config or defaults"
         )
 
-    # Run the gateway with retry loop
+    # Run the gateway with retry loop. Il blocco di reset sta DENTRO il loop,
+    # non prima: le primitive asyncio tenute in globali di modulo si legano al
+    # loop su cui vengono accodate la prima volta (per i lock, alla prima
+    # CONTESA — vedi tests/runtime/test_loop_bound_globals.py). Un tentativo
+    # che riparte dopo un crash con un lock già legato al loop morto del
+    # tentativo precedente solleverebbe "bound to a different event loop" alla
+    # prima contesa; e per i lock con un ``await`` dentro la sezione critica
+    # (``power._STATE_LOCK``, ``android_web._BRIDGE_LOCK``,
+    # ``notifier._BRIDGE_LOCK``, ``settings_api._update_check_lock``) la
+    # contesa è la norma, non l'eccezione. Resettare una sola volta all'ingresso
+    # di ``run_gateway`` copriva il restart lato Kotlin ma non i retry interni:
+    # l'attempt 2 ripartiva su un loop nuovo con i lock dell'attempt 1.
     for attempt in range(1, MAX_RETRIES + 1):
+        # Reset Android-only bridge state so a fresh gateway start cannot
+        # inherit a stale bridge or locked asyncio state from a previous crashed
+        # loop. Tutti i bridge (web-search + installed-apps + notifier +
+        # location + power + ssh + updater) vengono resettati qui,
+        # simmetricamente, insieme alle altre primitive asyncio tenute in
+        # globali di modulo (config store, lock del controllo aggiornamenti,
+        # registro dei job SSH).
+        try:
+            from jenny.agent.tools.android_web import reset_android_web_state
+            from jenny.agent.tools.ssh_jobs import reset_job_store
+            from jenny.agent.tools.ssh_transport import reset_ssh_backend
+            from jenny.config.store import reset_config_store_state
+            from jenny.mcp.manager import reset_mcp_state
+            from jenny.runtime.location import reset_location_state
+            from jenny.runtime.notifier import reset_notifier_state
+            from jenny.runtime.power import reset_power_state
+            from jenny.runtime.update_install import reset_install_state
+            from jenny.webui.android_apps_api import reset_installed_apps_state
+            from jenny.webui.mcp_api import reset_mcp_settings_state
+            from jenny.webui.settings_api import reset_update_check_state
+
+            reset_android_web_state()
+            # I client MCP sono asincroni e legati all'event loop: ereditarli da
+            # un loop morto fallirebbe al primo tool con errori di loop chiuso.
+            # Anche gli esiti dei test di Settings (cache in-memory) si
+            # scordano: al riavvio la UI riparte da "non testato", che è la
+            # verità.
+            reset_mcp_state()
+            reset_mcp_settings_state()
+            reset_installed_apps_state()
+            reset_notifier_state()
+            reset_location_state()
+            # L'updater tiene una fase *sticky* e un ``UpdateBridge`` in cache:
+            # senza questo reset un gateway che riparte nello stesso processo
+            # mostrerebbe la fase del run precedente (e rifiuterebbe di
+            # installare, credendo di aver già committato) parlando per giunta a
+            # un context ormai morto.
+            reset_install_state()
+            # Il power manager tiene refcount e wakelock: ereditare la
+            # contabilità di un loop morto farebbe credere di tenere un lock che
+            # non c'è più.
+            reset_power_state()
+            # Il backend SSH tiene il pool di sessioni: ereditarlo da un loop
+            # morto lascerebbe connessioni legate a un event loop che non esiste
+            # più.
+            reset_ssh_backend()
+            # Il registro dei job SSH è un singleton di modulo il cui lock resta
+            # preso *durante* l'exec remoto: due poll concorrenti si accodano
+            # davvero, e questo lega il lock al loop. Senza reset, dopo un
+            # restart in-process ogni operazione sui job SSH morirebbe con
+            # "bound to a different event loop"; lo stato vero sta su file, qui
+            # si scorda solo la cache.
+            reset_job_store()
+            # Il lock delle scritture di config.json vive in una globale di
+            # modulo e tutte le ~16 scritture ci passano: se resta legato al
+            # loop precedente, config.json diventa di sola lettura per il resto
+            # della vita del processo.
+            reset_config_store_state()
+            # Il controllo aggiornamenti tiene il suo lock attraverso la rete:
+            # se il loop muore lì in mezzo, la guardia ``locked()`` risponde
+            # ``busy`` per sempre e il bottone resta morto.
+            reset_update_check_state()
+        except Exception:
+            # Non-fatale: al peggio si eredita un bridge stale (verrà ricreato).
+            logger.opt(exception=True).debug("Could not reset Android bridge state")
+
         try:
             asyncio.run(
                 _run_gateway(

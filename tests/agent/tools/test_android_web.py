@@ -12,6 +12,7 @@ from jenny.agent.tools.android_web import (
     AndroidWebFetchTool,
     AndroidWebSearchTool,
     _looks_like_captcha,
+    _looks_like_consent,
     _parse_search_response,
 )
 from jenny.config.schema import ToolsConfig
@@ -70,6 +71,35 @@ class TestLooksLikeCaptcha:
         assert _looks_like_captcha(text) is False
 
 
+class TestLooksLikeConsent:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # consent.bing.com / pagine di consenso cookie reali.
+            "https://consent.bing.com/choose-your-preferences",
+            "We use cookies to improve your experience. Manage cookie preferences.",
+            "Choose your preferences to continue.",
+            "Your privacy settings: accept all cookies to continue.",
+            "We're updating our terms. Please review and consent.",
+        ],
+    )
+    def test_detects_consent_pages(self, text):
+        assert _looks_like_consent(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            # Una SERP vera vuota NON deve sembrare una pagina di consenso
+            # (regressione: footer "Privacy" comuni non devono innescare).
+            "There are no results for your search. Privacy | Legal | About",
+            "Results for: python asyncio\n1. asyncio docs\n   https://docs.python.org",
+        ],
+    )
+    def test_no_false_positive_on_ordinary_pages(self, text):
+        assert _looks_like_consent(text) is False
+
+
 class TestParseSearchResponse:
     def test_results_object(self):
         raw = json.dumps({"results": RESULTS, "pageText": ""})
@@ -90,6 +120,22 @@ class TestParseSearchResponse:
         )
         with pytest.raises(ValueError, match="CAPTCHA"):
             _parse_search_response(raw)
+
+    def test_empty_results_with_consent_page_text_raises_consent(self):
+        # consent.bing.com: la SERP non c'è, ma la diagnosi deve essere
+        # "consenso", non "CAPTCHA" — e non un silenzioso "No results".
+        raw = json.dumps(
+            {
+                "results": [],
+                "pageText": "consent.bing.com — choose your preferences to continue.",
+            }
+        )
+        with pytest.raises(ValueError, match="consent"):
+            _parse_search_response(raw)
+
+    def test_non_json_consent_page_raises_consent(self):
+        with pytest.raises(ValueError, match="consent"):
+            _parse_search_response("<html>Manage cookie preferences</html>")
 
     def test_empty_results_with_clean_page_text_returns_empty(self):
         # Genuinely empty SERP must NOT raise — the caller reports
@@ -139,6 +185,31 @@ class TestParseSearchResponse:
         ]
         raw = json.dumps({"results": results, "pageText": ""})
         assert _parse_search_response(raw) == results
+
+
+class TestSearchEngineSchema:
+    """Il validator di `AndroidWebSearchConfig` ricade sul default se il valore
+    in config.json è stato scritto male a mano (la route di settings rifiuta
+    già con 400; qui si copre la strada che la route non vede)."""
+
+    def test_default_is_bing(self):
+        assert AndroidWebSearchConfig().search_engine == "bing"
+
+    def test_invalid_engine_falls_back_to_bing(self):
+        cfg = AndroidWebSearchConfig.model_validate({"search_engine": "altavista"})
+        assert cfg.search_engine == "bing"
+
+    def test_invalid_engine_camel_case_key_falls_back(self):
+        cfg = AndroidWebSearchConfig.model_validate({"searchEngine": "google"})
+        assert cfg.search_engine == "bing"
+
+    def test_invalid_engine_type_falls_back(self):
+        cfg = AndroidWebSearchConfig.model_validate({"search_engine": 42})
+        assert cfg.search_engine == "bing"
+
+    def test_case_insensitive_normalization(self):
+        cfg = AndroidWebSearchConfig.model_validate({"search_engine": "BING"})
+        assert cfg.search_engine == "bing"
 
 
 class TestResetAndroidWebState:

@@ -12,6 +12,7 @@ from jenny.config.tool_schemas import (
     FileToolsConfig,
     IntrospectToolConfig,
     LocationConfig,
+    MCPConfig,
     MyToolConfig,
     PythonExecConfig,
     SshConfig,
@@ -231,6 +232,7 @@ class ToolsConfig(Base):
     introspect: IntrospectToolConfig = Field(default_factory=IntrospectToolConfig)
     diagnostics: DiagnosticsToolConfig = Field(default_factory=DiagnosticsToolConfig)
     ssh: SshConfig = Field(default_factory=SshConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     # NB: canonical home = ``Config.security`` (SecurityConfig). Questo campo
     # resta su ToolsConfig come **mirror** sincronizzato (il tool-layer lo legge
     # via ``ctx.config.restrict_to_workspace``); il validator di ``Config`` lo

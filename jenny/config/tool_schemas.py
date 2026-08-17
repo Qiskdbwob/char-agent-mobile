@@ -16,10 +16,13 @@ import PythonExecConfig``) così gli import storici continuano a funzionare.
 
 from __future__ import annotations
 
-from typing import Literal
+import re
+from typing import Any, Literal
+
+from loguru import logger
 
 from jenny.config_base import Base
-from jenny.pydantic_compat import Field
+from jenny.pydantic_compat import Field, model_validator
 
 
 class PythonExecConfig(Base):
@@ -71,12 +74,56 @@ class MyToolConfig(Base):
     allow_set: bool = False
 
 
+# Unici motori supportati dal bridge Android. Il valore di ``search_engine``
+# è una stringa libera nello schema perché la route di settings la valida già
+# con 400 (vedi ``settings_api.update_web_search_settings``); qui il validator
+# copre la strada che la route non vede — una config.json modificata a mano —
+# con lo stesso pattern di ``PowerConfig._coerce_keep_awake``: un valore
+# scritto male è un refuso, non un motivo per cui ``web_search`` fallisca su
+# ogni chiamata con un ValueError scoperto solo a runtime.
+ANDROID_WEB_SEARCH_ENGINES = ("bing",)
+DEFAULT_ANDROID_WEB_SEARCH_ENGINE = "bing"
+
+
 class AndroidWebSearchConfig(Base):
     """Android WebView-backed search configuration."""
 
-    search_engine: str = "bing"
+    search_engine: str = DEFAULT_ANDROID_WEB_SEARCH_ENGINE
     max_results: int = 5
     timeout: int = 30
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_search_engine(cls, data: Any) -> Any:
+        """Normalizza ``search_engine`` e ricade sul default se non riconosciuto.
+
+        ``mode="before"``: il valore è ancora quello grezzo del file, quindi si
+        intercetta anche un tipo sbagliato (numero, null) che la validazione del
+        campo boccerebbe con un'eccezione. Se l'engine non è tra quelli
+        implementati dal bridge (``android_web._bridge_search`` ne accetta uno
+        solo), si logga e si ricade su ``"bing"`` invece di far fallire il
+        gateway o ogni chiamata a ``web_search``.
+        """
+        if not isinstance(data, dict):
+            return data
+        # Entrambe le grafie: il file può usare camelCase (alias di Base) e il
+        # validator gira sul dict grezzo, prima della popolazione degli alias.
+        for key in ("search_engine", "searchEngine"):
+            if key not in data:
+                continue
+            raw = data[key]
+            engine = raw.strip().lower() if isinstance(raw, str) else ""
+            if engine not in ANDROID_WEB_SEARCH_ENGINES:
+                logger.warning(
+                    "Invalid androidWeb.search.searchEngine value {!r}; falling back to {!r}",
+                    raw,
+                    DEFAULT_ANDROID_WEB_SEARCH_ENGINE,
+                )
+                engine = DEFAULT_ANDROID_WEB_SEARCH_ENGINE
+            if engine != raw:
+                data = {**data, key: engine}
+            break
+        return data
 
 
 class AndroidWebFetchConfig(Base):
@@ -201,3 +248,121 @@ class SshConfig(Base):
     keepalive_interval_s: int = Field(default=30, ge=0, le=300)
     idle_close_s: int = Field(default=300, ge=30)
     max_transfer_bytes: int = Field(default=50 * 1024 * 1024, ge=1024)
+
+
+# --- MCP (Model Context Protocol) -------------------------------------------
+# Server MCP configurati a mano dall'utente in Settings → Tools. Stesso modello
+# di fiducia di ``SshConfig``: l'agente può raggiungere solo server che un umano
+# ha dichiarato qui — mai indirizzi arbitrari, mai discovery automatica. Le
+# header (es. ``Authorization``) possono contenere segreti e stanno in
+# ``config.json`` con la stessa esposizione delle chiavi API dei provider
+# (``chmod 600`` garantito da ``store.mutate``); ``repr=False`` le tiene fuori
+# dai log, come ``password`` per SSH.
+
+MCP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+MCP_DEFAULT_TIMEOUT_S = 30
+MCP_MIN_TIMEOUT_S = 1
+MCP_MAX_TIMEOUT_S = 600
+
+
+class MCPServerConfig(Base):
+    """Un server MCP Streamable HTTP.
+
+    ``name`` è l'unica cosa che il modello passa ai tool (prefisso
+    ``mcp__<name>__<tool>``) e da lì viene la garanzia che conta: l'agente non
+    può indovinare un endpoint, può solo nominare un server già dichiarato.
+    ``headers`` vengono aggiunte a ogni richiesta JSON-RPC (auth Bearer, ecc.).
+    """
+
+    name: str = ""
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict, repr=False)
+    enabled: bool = True
+    timeout: int = Field(default=MCP_DEFAULT_TIMEOUT_S, ge=MCP_MIN_TIMEOUT_S, le=MCP_MAX_TIMEOUT_S)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_headers(cls, data: Any) -> Any:
+        """Normalizza ``headers`` (e i campi scalari) da un file scritto a mano.
+
+        Un valore non-dict per headers non deve far fallire l'intero gateway:
+        si ricade su {}. I valori vengono forzati a str (un header deve essere
+        testo). ``timeout`` viene forzato a int e riportato nei limiti del
+        campo: un refuso come 999 non deve trasformare l'intera config in
+        "recuperata dai default" — la route di settings valida già con 400, qui
+        si copre la strada che la route non vede. Il controllo vero di
+        ``name``/``url`` lo fa il validator di ``MCPConfig`` a monte, che
+        scarta l'intero server se non validi.
+        """
+        if not isinstance(data, dict):
+            return data
+        headers = data.get("headers") or {}
+        if not isinstance(headers, dict):
+            logger.warning("MCP server headers must be a dict; ignoring")
+            headers = {}
+        headers = {str(k): str(v) for k, v in headers.items()}
+        data = {**data, "headers": headers}
+        for key in ("name", "url"):
+            value = data.get(key)
+            if value is not None and not isinstance(value, str):
+                data = {**data, key: str(value)}
+        if "enabled" in data and not isinstance(data["enabled"], bool):
+            data = {**data, "enabled": bool(data["enabled"])}
+        if "timeout" in data:
+            raw_timeout = data["timeout"]
+            try:
+                timeout = int(raw_timeout)
+            except (TypeError, ValueError):
+                timeout = MCP_DEFAULT_TIMEOUT_S
+            if timeout < MCP_MIN_TIMEOUT_S or timeout > MCP_MAX_TIMEOUT_S:
+                logger.warning(
+                    "MCP server timeout {!r} out of range; clamping to {}..{}",
+                    raw_timeout, MCP_MIN_TIMEOUT_S, MCP_MAX_TIMEOUT_S,
+                )
+                timeout = max(MCP_MIN_TIMEOUT_S, min(MCP_MAX_TIMEOUT_S, timeout))
+            if timeout != raw_timeout:
+                data = {**data, "timeout": timeout}
+        return data
+
+
+class MCPConfig(Base):
+    """Configurazione dei server MCP."""
+
+    servers: list[MCPServerConfig] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_invalid_servers(cls, data: Any) -> Any:
+        """Scarta (con warning) i server non validi di un config scritto a mano.
+
+        La route di settings valida già con 400 (name slug unico, URL http(s)
+        passato al guard SSRF); qui si copre la strada che la route non vede —
+        una ``config.json`` modificata a mano — senza far fallire l'avvio del
+        gateway o il turno: un server senza nome o con URL non-http è un
+        refuso, non un motivo per buttare giù tutto. Stesso pattern di
+        ``AndroidWebSearchConfig._coerce_search_engine``.
+        """
+        if not isinstance(data, dict):
+            return data
+        raw_servers = data.get("servers") or []
+        if not isinstance(raw_servers, list):
+            return data
+        kept: list[Any] = []
+        for entry in raw_servers:
+            if not isinstance(entry, dict):
+                logger.warning("MCP server entry is not an object; skipping")
+                continue
+            name = entry.get("name")
+            url = entry.get("url")
+            valid_name = isinstance(name, str) and bool(MCP_NAME_RE.match(name.strip()))
+            valid_url = isinstance(url, str) and url.strip().startswith(("http://", "https://"))
+            if not valid_name or not valid_url:
+                logger.warning(
+                    "MCP server {!r} ({!r}) is invalid (name must be a slug, url must be http(s)); skipping",
+                    name, url,
+                )
+                continue
+            kept.append(entry)
+        if len(kept) != len(raw_servers):
+            data = {**data, "servers": kept}
+        return data

@@ -118,7 +118,9 @@ def parse_query(path_with_query: str) -> QueryParams:
 # Markers used to detect query params whose values must never be logged.
 # Matched case-insensitively as substrings so variants like ``apiKey``,
 # ``access_token`` or ``x_secret`` are covered without an exhaustive list.
-_SENSITIVE_QUERY_MARKERS = ("token", "api_key", "apikey", "secret", "password")
+# ``headers`` porta il JSON delle header dei server MCP, che può contenere
+# valori segreti (Authorization, X-Api-Key, …): va mascherato per intero.
+_SENSITIVE_QUERY_MARKERS = ("token", "api_key", "apikey", "secret", "password", "headers")
 
 
 def _is_sensitive_query_key(key: str) -> bool:

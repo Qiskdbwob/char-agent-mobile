@@ -685,7 +685,18 @@ export class SettingsController {
       ${this._field(i18n.t('settings.fetchMaxChars'), 'number', 'ws_fetch_max', ws.fetch_max_chars ?? 50000, i18n.t('settings.fetchMaxCharsPlaceholder'))}
       <div class="settings-divider"></div>
       <div class="settings-subheading">${i18n.t('settings.location.section')}</div>
-      ${this._renderLocation(d)}`;
+      ${this._renderLocation(d)}
+      <div class="settings-divider"></div>
+      <div class="settings-subheading">${i18n.t('settings.mcp.title')}</div>
+      ${this._renderMcp()}`;
+  }
+
+  /* I server MCP arrivano da /api/settings/mcp, non dal payload di
+     /api/settings: come per SSH, la sezione ha stato che vive fuori dal
+     payload principale (esito dei test) e una chiamata sua la rende
+     indipendente dall'apertura delle impostazioni. */
+  _renderMcp() {
+    return `<div id="mcp-block"><div class="settings-empty-state">${i18n.t('settings.loading')}</div></div>`;
   }
 
   _renderLocation(d) {
@@ -709,6 +720,257 @@ export class SettingsController {
      quelle letture a ogni apertura delle impostazioni. */
   _renderSsh() {
     return `<div id="ssh-block"><div class="settings-empty-state">${i18n.t('settings.loading')}</div></div>`;
+  }
+
+  // ── MCP ────────────────────────────────────────────────────────────
+
+  /* Stessa regola di `_loadSsh`: il nodo si cerca **dopo** l'await, perché
+     `render()` ricostruisce tutto `contentEl.innerHTML` e un nodo catturato
+     prima è già staccato dal documento. */
+  async _loadMcp() {
+    const gen = this._gen;
+    if (!this.contentEl.querySelector('#mcp-block')) return;
+    let mcp;
+    try {
+      mcp = await api.getMcp();
+    } catch {
+      if (this._stale(gen)) return;
+      const failEl = this.contentEl.querySelector('#mcp-block');
+      if (failEl) failEl.innerHTML = `<div class="settings-empty-state">${i18n.t('settings.mcp.loadFailed')}</div>`;
+      return;
+    }
+    if (this._stale(gen)) return;
+    const blockEl = this.contentEl.querySelector('#mcp-block');
+    if (!blockEl) return;
+    this._mcp = mcp;
+    blockEl.innerHTML = this._renderMcpBlock(mcp);
+    this._wireMcpBlock();
+    this._restoreScrollTop();
+  }
+
+  _mcpStatusBadge(s) {
+    if (!s) return `<span class="provider-badge format-badge">${i18n.t('settings.mcp.statusUntested')}</span>`;
+    if (s.status === 'ok') {
+      return `<span class="provider-badge format-badge">${i18n.t('settings.mcp.statusOk', { tools: s.tools })}</span>`;
+    }
+    if (s.status === 'error') {
+      return `<span class="provider-badge format-badge" style="color:var(--danger,#d9534f)">${i18n.t('settings.mcp.statusError')}</span>`;
+    }
+    return `<span class="provider-badge format-badge">${i18n.t('settings.mcp.statusUntested')}</span>`;
+  }
+
+  _renderMcpBlock(d) {
+    const servers = d.servers || [];
+    const list = servers.length
+      ? servers.map(s => this._renderMcpServer(s)).join('')
+      : `<div class="settings-empty-state">${i18n.t('settings.mcp.empty')}</div>`;
+    return `
+      <p class="settings-hint" style="margin:0 0 10px;font-size:12px;color:var(--text-faint)">${i18n.t('settings.mcp.hint')}</p>
+      ${list}
+      <button class="settings-btn-add" id="btn-mcp-add"><i class="ti ti-plus"></i> ${i18n.t('settings.mcp.addServer')}</button>`;
+  }
+
+  _renderMcpServer(s) {
+    const name = escapeHtml(s.name);
+    const headers = (s.header_keys || []).length
+      ? `<div style="font-size:12px;color:var(--text-faint);margin-top:2px">${escapeHtml((s.header_keys || []).join(' · '))}</div>`
+      : '';
+    const error = s.last_error
+      ? `<div style="font-size:12px;color:var(--danger,#d9534f);margin-top:4px;word-break:break-word">${escapeHtml(s.last_error)}</div>`
+      : '';
+    return `<div class="provider-card" data-mcp-name="${name}">
+      <div class="provider-card-header">
+        <span class="provider-name">${name}</span>
+        ${this._mcpStatusBadge(s)}
+      </div>
+      <div class="provider-card-body">
+        <span class="provider-url">${escapeHtml(s.url)}</span>
+        ${headers}
+        <div style="font-size:12px;color:var(--text-faint);margin-top:2px">${i18n.t('settings.mcp.timeoutLabel', { timeout: s.timeout })}</div>
+        ${error}
+      </div>
+      <div class="provider-card-actions">
+        <button class="settings-btn-add mcp-test" data-mcp-name="${name}">${i18n.t('settings.mcp.test')}</button>
+        <button class="btn-icon mcp-edit" data-mcp-name="${name}" title="${i18n.t('settings.edit')}">
+          <i class="ti ti-edit"></i>
+        </button>
+        <button class="btn-icon btn-danger mcp-delete" data-mcp-name="${name}" title="${i18n.t('settings.delete')}">
+          <i class="ti ti-trash"></i>
+        </button>
+      </div>
+    </div>`;
+  }
+
+  _wireMcpBlock() {
+    this._wireBtn('btn-mcp-add', () => this._showMcpServerDialog());
+    const each = (selector, fn) =>
+      this.contentEl.querySelectorAll(selector).forEach(btn =>
+        btn.addEventListener('click', () => fn(btn.dataset.mcpName, btn)));
+    each('.mcp-test', (name, btn) => this._testMcpServer(name, btn));
+    each('.mcp-edit', name => this._showMcpServerDialog(
+      (this._mcp?.servers || []).find(s => s.name === name)));
+    each('.mcp-delete', name => this._deleteMcpServer(name));
+  }
+
+  /* Segno di attesa sul bottone che ha lanciato il test: apre una connessione
+     di rete e può durare secondi (stessa regola di _setSshVerifyBusy). */
+  _setMcpTestBusy(name, busy) {
+    const btn = this.contentEl?.querySelector(`.mcp-test[data-mcp-name="${CSS.escape(name)}"]`);
+    if (!btn) return;
+    btn.disabled = busy;
+    btn.textContent = i18n.t(busy ? 'settings.mcp.testing' : 'settings.mcp.test');
+  }
+
+  async _testMcpServer(name, btn) {
+    const gen = this._gen;
+    this._setMcpTestBusy(name, true);
+    try {
+      await api.testMcpServer(name);
+    } catch (e) {
+      if (this._stale(gen)) return;
+      // Il server ha già salvato l'esito: la card va riletta per mostrarlo.
+      showToast(e.message || i18n.t('settings.mcp.testFailed'), 'error');
+      this._loadMcp();
+      return;
+    } finally {
+      this._setMcpTestBusy(name, false);
+    }
+    if (this._stale(gen)) return;
+    showToast(i18n.t('settings.mcp.tested'));
+    this._loadMcp();
+  }
+
+  async _deleteMcpServer(name) {
+    if (!await confirmDialog(i18n.t('settings.mcp.deleteConfirm', { name }))) return;
+    try {
+      const res = await api.deleteMcpServer(name);
+      showToast(i18n.t('settings.mcp.deleted'));
+      if (res && res.requires_restart) showToast(i18n.t('settings.mcp.restartNote'), 'info');
+      this._loadMcp();
+    } catch (e) { showToast(e.message || i18n.t('settings.saveError'), 'error'); }
+  }
+
+  /* Il nome non è modificabile: è l'identità del server e la radice dei nomi
+     dei tool (`mcp__<name>__<tool>`) che il modello ha già imparato. Le
+     header non vengono mai pre-compilate coi valori (non escono dal server):
+     il campo vuoto in modifica significa "tieni quella salvata", e togliere
+     una riga la cancella. */
+  _showMcpServerDialog(existing) {
+    const isEdit = !!existing;
+    const dialog = document.createElement('dialog');
+    dialog.className = 'oc-dialog';
+    dialog.id = 'mcp-server-dialog';
+    const value = (field, fallback = '') => escapeHtml(String(existing?.[field] ?? fallback));
+    const headerKeys = existing?.header_keys || [];
+    const headerRows = headerKeys.length
+      ? headerKeys.map(k => this._mcpHeaderRow(k, '')).join('')
+      : this._mcpHeaderRow('', '');
+    dialog.innerHTML = `
+      <div class="oc-dialog-inner">
+        <h3 style="margin:0 0 16px;font-size:15px;font-weight:600">
+          ${isEdit ? i18n.t('settings.mcp.editServer') : i18n.t('settings.mcp.addServer')}
+        </h3>
+        <div class="settings-field">
+          <label class="settings-label">${i18n.t('settings.mcp.name')}</label>
+          <input type="text" class="settings-input" id="dlg-mcp-name" placeholder="${i18n.t('settings.mcp.namePlaceholder')}"
+            value="${isEdit ? value('name') : ''}" ${isEdit ? 'readonly' : ''} autocomplete="off" />
+        </div>
+        <div class="settings-field">
+          <label class="settings-label">${i18n.t('settings.mcp.url')}</label>
+          <input type="text" class="settings-input" id="dlg-mcp-url" placeholder="${i18n.t('settings.mcp.urlPlaceholder')}"
+            value="${value('url')}" autocomplete="off" inputmode="url" />
+        </div>
+        <div class="settings-field">
+          <label class="settings-label">${i18n.t('settings.mcp.timeout')}</label>
+          <input type="number" class="settings-input" id="dlg-mcp-timeout" value="${value('timeout', '30')}" />
+          <span class="settings-field-hint">${i18n.t('settings.mcp.timeoutHint')}</span>
+        </div>
+        <div class="settings-field settings-toggle-row">
+          <label class="settings-label">${i18n.t('settings.mcp.enabled')}</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="dlg-mcp-enabled" ${existing?.enabled === false ? '' : 'checked'}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="settings-field">
+          <label class="settings-label">${i18n.t('settings.mcp.headers')}</label>
+          <div id="dlg-mcp-headers" style="display:flex;flex-direction:column;gap:6px;width:100%">${headerRows}</div>
+          <span class="settings-field-hint">${i18n.t('settings.mcp.headersHint')}</span>
+          <button class="settings-btn-add" id="dlg-mcp-header-add" style="margin-top:6px"><i class="ti ti-plus"></i> ${i18n.t('settings.mcp.addHeader')}</button>
+        </div>
+        <div class="oc-dialog-buttons" style="margin-top:16px">
+          <button class="oc-btn oc-btn-cancel" id="dlg-mcp-cancel">${i18n.t('common.cancel')}</button>
+          <button class="oc-btn oc-btn-confirm" id="dlg-mcp-save">${i18n.t('settings.save')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+
+    const close = () => { dialog.close(); dialog.remove(); };
+    const headersEl = dialog.querySelector('#dlg-mcp-headers');
+    const addHeaderRow = (name = '', headerValue = '') => {
+      const row = document.createElement('div');
+      row.className = 'mcp-header-row';
+      row.style.cssText = 'display:flex;gap:6px;width:100%';
+      row.innerHTML = `
+        <input type="text" class="settings-input" placeholder="${i18n.t('settings.mcp.headerName')}" value="${escapeHtml(name)}" style="flex:1" autocomplete="off" />
+        <input type="text" class="settings-input" placeholder="${i18n.t('settings.mcp.headerValue')}" value="${escapeHtml(headerValue)}" style="flex:1.4" autocomplete="off" data-lpignore="true" />
+        <button class="btn-icon btn-danger mcp-header-remove" title="${i18n.t('settings.mcp.removeHeader')}"><i class="ti ti-x"></i></button>`;
+      row.querySelector('.mcp-header-remove').addEventListener('click', () => row.remove());
+      headersEl.appendChild(row);
+    };
+    dialog.querySelector('#dlg-mcp-header-add').addEventListener('click', () => addHeaderRow());
+
+    dialog.querySelector('#dlg-mcp-cancel').addEventListener('click', close);
+    dialog.querySelector('#dlg-mcp-save').addEventListener('click', async () => {
+      const params = {
+        name: dialog.querySelector('#dlg-mcp-name').value.trim(),
+        url: dialog.querySelector('#dlg-mcp-url').value.trim(),
+        timeout: dialog.querySelector('#dlg-mcp-timeout').value.trim(),
+        enabled: dialog.querySelector('#dlg-mcp-enabled').checked ? '1' : '0',
+      };
+      if (!params.name || !params.url) {
+        showToast(i18n.t('settings.mcp.fieldsRequired'), 'error');
+        return;
+      }
+      // Le header in chiaro vivono solo dentro questa funzione: si
+      // serializzano, si mandano, e non restano in alcuno stato della UI.
+      const headers = [...headersEl.querySelectorAll('.mcp-header-row')]
+        .map(row => {
+          const inputs = row.querySelectorAll('input');
+          return [inputs[0].value.trim(), inputs[1].value];
+        })
+        .filter(pair => pair[0]);
+      params.headers = JSON.stringify(headers);
+
+      // Finestra di salvataggio in volo: stessa guardia del dialog provider.
+      dialog.dataset.busy = '1';
+      dialog.querySelector('#dlg-mcp-save').disabled = true;
+      try {
+        const res = await api.saveMcpServer(params);
+        close();
+        showToast(i18n.t('settings.mcp.saved'));
+        if (res && res.requires_restart) showToast(i18n.t('settings.mcp.restartNote'), 'info');
+        this._loadMcp();
+      } catch (e) {
+        showToast(e.message || i18n.t('settings.saveError'), 'error');
+      } finally {
+        delete dialog.dataset.busy;
+        dialog.querySelector('#dlg-mcp-save').disabled = false;
+      }
+    });
+    dialog.addEventListener('cancel', (e) => {
+      if (dialog.dataset.busy) e.preventDefault();
+    });
+    dialog.addEventListener('close', () => dialog.remove());
+  }
+
+  _mcpHeaderRow(name, headerValue) {
+    return `<div class="mcp-header-row" style="display:flex;gap:6px;width:100%">
+      <input type="text" class="settings-input" placeholder="${i18n.t('settings.mcp.headerName')}" value="${escapeHtml(name)}" style="flex:1" autocomplete="off" />
+      <input type="text" class="settings-input" placeholder="${i18n.t('settings.mcp.headerValue')}" value="${escapeHtml(headerValue)}" style="flex:1.4" autocomplete="off" data-lpignore="true" />
+      <button class="btn-icon btn-danger mcp-header-remove" title="${i18n.t('settings.mcp.removeHeader')}"><i class="ti ti-x"></i></button>
+    </div>`;
   }
 
   /* Il nodo si cerca **dopo** l'await, non prima: `render()` ricostruisce tutto
@@ -2016,6 +2278,9 @@ export class SettingsController {
 
     // SSH: il blocco si popola da solo (chiamata a parte, v. _renderSsh)
     this._loadSsh();
+
+    // MCP: stessa strategia del blocco SSH (chiamata a parte, v. _renderMcp)
+    this._loadMcp();
 
     // Backup e ripristino
     this._wireBackup();

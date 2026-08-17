@@ -219,6 +219,60 @@ def validate_ssh_target(host: str) -> tuple[bool, str]:
     return True, ""
 
 
+def validate_mcp_target(url: str) -> tuple[bool, str]:
+    """Validate an MCP server URL (declared by the user, never model-supplied).
+
+    I server MCP li dichiara l'utente in Settings → Tools, come gli host SSH:
+    sono target scelti da un umano, quindi RFC1918, ULA e CGNAT sono ammessi
+    (un server MCP sul proprio NAS o via Tailscale è il caso d'uso normale).
+    Loopback resta bloccato — l'agente non deve poter aprire una sessione MCP
+    verso il telefono stesso né usare il server dichiarato come ponte verso
+    l'API del gateway — e così link-local/metadata e 0.0.0.0/8 (stesso set di
+    ``_SSH_BLOCKED_NETWORKS``).
+
+    Il controllo loopback è volutamente PRIMA della whitelist: la
+    ``ssrfWhitelist`` non deve poter riaprire il telefono, per le stesse
+    ragioni di ``validate_ssh_target``.
+
+    Chiamata due volte di proposito: al salvataggio in Settings (errore subito
+    all'utente) e alla discovery/connessione (copre il nome che comincia a
+    risolvere a un indirizzo vietato più tardi, DNS rebinding).
+
+    Returns (ok, error_message).  When ok is True, error_message is empty.
+    """
+    try:
+        p = urlparse(url)
+    except Exception as e:
+        return False, str(e)
+    if p.scheme not in ("http", "https"):
+        return False, f"Only http/https allowed, got '{p.scheme or 'none'}'"
+    hostname = (p.hostname or "").strip().rstrip(".")
+    if not hostname:
+        return False, "Missing hostname"
+
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False, f"Cannot resolve hostname: {hostname}"
+
+    addrs: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for info in infos:
+        try:
+            addrs.append(ipaddress.ip_address(info[4][0]))
+        except ValueError:
+            continue
+    if not addrs:
+        return False, f"Cannot resolve hostname: {hostname}"
+
+    for addr in addrs:
+        if _normalize_addr(addr).is_loopback:
+            return False, f"Blocked: {hostname} resolves to the phone itself ({addr})"
+        if _is_blocked(addr, _SSH_BLOCKED_NETWORKS):
+            return False, f"Blocked: {hostname} resolves to {addr}"
+
+    return True, ""
+
+
 def _is_allowed_loopback_target(
     hostname: str,
     addrs: list[ipaddress.IPv4Address | ipaddress.IPv6Address],

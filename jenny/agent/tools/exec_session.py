@@ -276,6 +276,16 @@ class _PythonSession:
 # ---------------------------------------------------------------------------
 
 class ExecSessionManager:
+    """Gestisce le sessioni di esecuzione Python a lunga durata.
+
+    Le sessioni vivono in memoria come thread del processo gateway: non sono
+    persistite su disco e non sopravvivono né a un riavvio del gateway (retry
+    di ``run_gateway``, restart del service lato Kotlin, reboot del device) né
+    a un crash del processo. Dopo un riavvio ``list_python`` non le mostra più
+    e ``write_stdin`` risponde "session not found": un agente che riprende un
+    lavoro dopo un restart deve riavviarlo da capo, non tentare di riagganciarsi.
+    """
+
     def __init__(self, *, max_sessions: int = 8, idle_timeout: int = 1800) -> None:
         self.max_sessions = max_sessions
         self.idle_timeout = idle_timeout
@@ -645,7 +655,10 @@ class ListExecSessionsTool(Tool):
             "List active long-running Python exec sessions, including session_id, "
             "elapsed time, idle time, remaining timeout, and description. "
             "Use this to recover a session_id after context shifts before "
-            "polling or terminating with write_stdin."
+            "polling or terminating with write_stdin. "
+            "Sessions are in-memory only: after a gateway restart (app update, "
+            "service restart, reboot) they are gone and must be started again "
+            "from scratch."
         )
 
     @property

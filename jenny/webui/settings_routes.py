@@ -15,6 +15,12 @@ from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
 
 from jenny.bus.queue import MessageBus
+from jenny.webui.mcp_api import (
+    delete_mcp_server,
+    mcp_settings_payload,
+    save_mcp_server,
+    test_mcp_server,
+)
 from jenny.webui.settings_api import (
     WebUISettingsError,
     delete_provider,
@@ -105,6 +111,14 @@ class WebUISettingsRouter:
             return await self._handle_ssh(request, probe_ssh_host_key, "ssh host key probe")
         if path == "/api/settings/ssh/host-key/accept":
             return await self._handle_ssh(request, accept_ssh_host_key, "ssh host key accept")
+        if path == "/api/settings/mcp":
+            return self._handle_mcp_settings(request)
+        if path == "/api/settings/mcp/save":
+            return await self._handle_mcp(request, save_mcp_server, "mcp server save")
+        if path == "/api/settings/mcp/delete":
+            return await self._handle_mcp(request, delete_mcp_server, "mcp server delete")
+        if path == "/api/settings/mcp/test":
+            return await self._handle_mcp(request, test_mcp_server, "mcp connection test")
         if path == "/api/updates/check":
             return await self._handle_update_check(request)
         if path == "/api/updates/install":
@@ -364,6 +378,40 @@ class WebUISettingsRouter:
         gestore: duplicare il blocco try/except sette volte è il modo più
         facile per lasciarne una che fa trapelare il messaggio di un'eccezione
         inattesa nel corpo della risposta.
+        """
+        if not self._authorized(request):
+            return self._unauthorized()
+        try:
+            payload = await handler(self._query(request))
+        except WebUISettingsError as e:
+            return self._error_response(e.status, e.message)
+        except Exception:
+            self.logger.exception("{} failed", what)
+            return self._error_response(500, f"{what} failed")
+        return self._json_response(payload)
+
+    # -- MCP ---------------------------------------------------------------- #
+
+    def _handle_mcp_settings(self, request: WsRequest) -> Response:
+        if not self._authorized(request):
+            return self._unauthorized()
+        try:
+            return self._json_response(mcp_settings_payload())
+        except Exception:
+            self.logger.exception("failed to load mcp settings")
+            return self._error_response(500, "failed to load mcp settings")
+
+    async def _handle_mcp(
+        self,
+        request: WsRequest,
+        handler: Callable[[QueryParams], Awaitable[dict[str, Any]]],
+        what: str,
+    ) -> Response:
+        """Tronco comune delle route MCP: auth, errori applicativi, 500 muto.
+
+        Stessa forma di ``_handle_ssh``: le tre route differiscono solo per il
+        gestore, e un blocco try/except per route è il modo più facile per
+        lasciarne una che fa trapelare il messaggio di un'eccezione inattesa.
         """
         if not self._authorized(request):
             return self._unauthorized()

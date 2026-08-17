@@ -106,6 +106,27 @@ This toggle is a software gate only — it does **not** request or manage the An
 
 Two related values exist only in `config.json`, with no UI control: `tools.location.telegram_ttl_s` (default 3600 — how long a location shared from Telegram stays valid) and `tools.location.fresh_timeout_s` (default 15 — how long Jenny waits for a fresh GPS fix). See [Location](../using/location.md).
 
+### MCP servers
+
+Below Location, a list of external **MCP (Model Context Protocol) servers** — tools the agent can call that you declare by hand, over Streamable HTTP. The agent can only ever call tools from a server listed here; it can never discover or invent an endpoint.
+
+| Control | Effect | Default |
+|---|---|---|
+| **Add server** → Name | The identity of the server and the prefix of every tool it exposes (`mcp__<name>__<tool>`). 1–64 chars, letters/digits/`-`/`_`, must start alphanumeric. **Cannot be changed later** — there is no rename. | — |
+| **Add server** → URL / endpoint | The MCP endpoint, `http(s)`. Must pass the network policy: loopback is blocked (the agent must not reach the phone itself), while LAN/Tailscale hosts are allowed — an MCP server on your own NAS is the normal case. | — |
+| **Add server** → Timeout (sec) | Read timeout for the server's responses, 1–600. | 30 |
+| **Add server** → Enabled | Master switch per server; a disabled server exposes no tools. | On |
+| **Add server** → Headers | Extra HTTP headers sent on every request (e.g. `Authorization`). Values are secret: they are stored in `config.json` like API keys, never shown again once saved — an empty value in the edit dialog keeps the stored one, removing the row deletes the header. | none |
+| **Test** | Connects to the server (`initialize` + `tools/list`) and shows the tool count on the card, or the error. | — |
+| **Edit / Delete** | Edit the URL, timeout, enabled state or headers (the name is fixed). Deleting asks for confirmation and removes the server's tools. | — |
+
+Each card shows the server name, URL, the **names** of its headers (never the values), the timeout, and a status badge — *Not tested*, *N tools · OK*, or *Error* with the last message.
+
+Two behaviors worth knowing:
+
+- **A change applies at the next app restart.** MCP tools are built once at startup (the same moment as the SSH tools), so creating, editing, enabling or deleting a server shows an "Applies after restart" note; the running agent keeps its old tool set until then.
+- **A broken server never takes the gateway down.** At startup, a server that fails the network policy or doesn't answer discovery is skipped with a warning — the other servers and the agent itself keep working.
+
 ## Background activity
 
 Everything about Jenny surviving a screen that's been off for hours. It sits between Tools and SSH, and it opens by itself when the battery-optimization exemption is missing — that being the one thing here worth interrupting you for.
@@ -200,7 +221,7 @@ Settings intentionally does not expose everything the backend supports. The foll
 - `agents.defaults.dream.*` — Dream memory-consolidation schedule
 - `agents.defaults.atlas.*` — Atlas wiki-directory schedule and the token cap on the block it injects
 - `websocket.show_reasoning` — whether the "reasoning" pill is shown/recorded at all for the WebUI channel (default true); no toggle in Settings
-- `tools.*.enable` toggles for individual tools (file tools, `python_exec`, `my`, introspection, diagnostics, etc.) — only Web Search and Location get a Tools-section UI; everything else is config-only
+- `tools.*.enable` toggles for individual tools (file tools, `python_exec`, `my`, introspection, diagnostics, etc.) — only Web Search, Location and MCP servers get a Tools-section UI; everything else is config-only
 - `tools.location.telegram_ttl_s`, `tools.location.fresh_timeout_s` — see Location above
 - `tools.ssh.*` beyond the on/off switch and the host list — timeouts, output and transfer caps, keepalive, and the per-host `job_log_dir`; the SSH section covers hosts, keys and fingerprints and nothing else
 - `security.restrict_to_workspace`, `security.ssrf_whitelist` — sandboxing and network policy

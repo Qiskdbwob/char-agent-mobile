@@ -426,6 +426,30 @@ class ApiClient {
     return this._sshCall('/api/settings/ssh/host-key/accept', params);
   }
 
+  // ── MCP APIs ──
+  // Le route MCP riusano `_sshCall`: come SSH, il corpo di errore è testo
+  // già scritto per l'utente e va mostrato com'è.
+  async getMcp() {
+    return this._sshCall('/api/settings/mcp');
+  }
+
+  // `headers` è un array JSON di coppie [name, value]: il valore vuoto
+  // significa "tieni quella salvata". Il parametro si chiama `headers` di
+  // proposito: è uno dei marcatori di `http_utils.redact_query_secrets`, quindi
+  // il suo contenuto (che può includere Authorization) risulta già mascherato
+  // nei log del gateway.
+  async saveMcpServer(params) {
+    return this._sshCall('/api/settings/mcp/save', params);
+  }
+
+  async deleteMcpServer(name) {
+    return this._sshCall('/api/settings/mcp/delete', { name });
+  }
+
+  async testMcpServer(name) {
+    return this._sshCall('/api/settings/mcp/test', { name });
+  }
+
   async saveOnboarding(params) {
     const qs = new URLSearchParams({
       provider_name: params.provider_name || params.provider || '',
