@@ -259,6 +259,7 @@ class AgenticSearchBridge(context: Context) {
                 Log.w(TAG, "Blocked request to $reqUrl")
                 return WebResourceResponse(
                     "text/plain", "utf-8", 403, "Forbidden",
+                    emptyMap(),
                     ByteArrayInputStream("blocked by network policy".toByteArray(Charsets.UTF_8))
                 )
             }
@@ -537,7 +538,9 @@ class AgenticSearchBridge(context: Context) {
             // waitForPageOrSettle, ma atomico nel post per non perdere il
             // countDown nel caso "nessuna history".
             navigationLatch = latch
-            val ok = wv.canGoBack() && wv.goBack()
+            // goBack() è void: canGoBack() decide, goBack() esegue.
+            val ok = wv.canGoBack()
+            if (ok) wv.goBack()
             wentBack.set(ok)
             if (!ok) latch.countDown()
         }
@@ -671,7 +674,7 @@ class AgenticSearchBridge(context: Context) {
      */
     private fun decodeJsResult(raw: String?): JSONObject {
         if (raw.isNullOrBlank() || raw == "null") {
-            return errorJson("page returned no result")
+            return JSONObject().apply { put("error", "page returned no result") }
         }
         return try {
             var parsed: Any = JSONTokener(raw).nextValue()
@@ -682,9 +685,10 @@ class AgenticSearchBridge(context: Context) {
                     // Il valore non era JSON annidato: resta la stringa.
                 }
             }
-            if (parsed is JSONObject) parsed else errorJson("unexpected result type: ${parsed.javaClass.simpleName}")
+            if (parsed is JSONObject) parsed
+            else JSONObject().apply { put("error", "unexpected result type: ${parsed.javaClass.simpleName}") }
         } catch (e: JSONException) {
-            errorJson("invalid result from page: ${e.message}")
+            JSONObject().apply { put("error", "invalid result from page: ${e.message}") }
         }
     }
 
