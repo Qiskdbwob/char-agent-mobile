@@ -32,7 +32,16 @@
     "restricted": "Restricted",
     "default": "Default",
     "message": "Message",
+    "newSession": "New chat",
+    "newSessionConfirm": "Tap again to confirm",
     "scrollToBottom": "Jump to bottom"
+  },
+  "palette": {
+    "help": "List all slash commands",
+    "status": "Agent status: context, tasks, tokens",
+    "goal": "Start a long-running goal",
+    "dream": "Run Dream (memory consolidation)",
+    "atlas": "Rebuild wiki directory (WIKI.md)"
   },
   "subagents": {
     "title": "Subagents",

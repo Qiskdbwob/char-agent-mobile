@@ -620,7 +620,68 @@ body {
   flex-shrink: 0;
   padding: 10px 14px 12px;
   background: var(--bg);
+  position: relative;
 }
+
+/* ── Command palette "/": dropdown sopra la barra di input ── */
+.command-palette {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% + 6px);
+  z-index: 4;
+  max-height: 45vh;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* L'attributo [hidden] va riaffermato: il display:flex della regola sopra
+   avrebbe la precedenza sullo stile UA, e la palette resterebbe visibile. */
+.command-palette[hidden] { display: none; }
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+.palette-item > i { font-size: 16px; color: var(--accent); flex-shrink: 0; }
+.palette-cmd {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.palette-cmd em {
+  font-style: normal;
+  color: var(--text-faint);
+  font-weight: 400;
+}
+.palette-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.palette-item.sel,
+.palette-item:active { background: var(--border); }
 
 /* ── Compose: l'input unico, identico in chat e nella minichat di Jenny.
    Pillola (testo + eventuali azioni) e bottone di invio tondo esterno. ── */
@@ -1403,13 +1464,46 @@ body {
   white-space: nowrap;
 }
 
-/* Identity line — first scrollable element of the chat */
+/* Identity line — chip sticky: resta visibile (e tappabile, apre "Session
+   info") anche a fondo chat, senza coprire le bolle con una barra piena. */
 .chat-identity {
-  display: flex;
+  position: sticky;
+  top: 6px;
+  z-index: 5;
+  align-self: flex-start;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 0 12px;
+  padding: 6px 10px 6px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
   flex-shrink: 0;
+}
+
+/* Bottone "nuova sessione" nella riga identità: due tap (armato -> conferma)
+   per evitare un reset di contesto accidentale. */
+.chat-identity-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  padding: 4px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.chat-identity-new:hover { background: var(--border); color: var(--text); }
+.chat-identity-new:active { transform: scale(0.92); }
+.chat-identity-new.armed {
+  background: rgba(239, 68, 68, 0.15);
+  color: rgb(239, 68, 68);
 }
 .chat-identity-flower {
   color: var(--flower);

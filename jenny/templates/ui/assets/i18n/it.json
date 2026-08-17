@@ -32,7 +32,16 @@
     "restricted": "Limitato",
     "default": "Predefinito",
     "message": "Messaggio",
+    "newSession": "Nuova chat",
+    "newSessionConfirm": "Tocca di nuovo per confermare",
     "scrollToBottom": "Vai in fondo"
+  },
+  "palette": {
+    "help": "Elenca tutti i comandi",
+    "status": "Stato agente: contesto, attività, token",
+    "goal": "Avvia un obiettivo a lungo termine",
+    "dream": "Esegui Dream (consolidamento memoria)",
+    "atlas": "Ricostruisci la directory wiki (WIKI.md)"
   },
   "subagents": {
     "title": "Subagent",

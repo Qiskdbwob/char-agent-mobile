@@ -137,6 +137,18 @@ function renderKaTeX(container) {
   }
 }
 
+/* Comandi slash mostrati nella palette "/": SOLO quelli senza una UI
+   propria (stop/new/model/skill/history hanno bottone o tab dedicati).
+   send=true -> il tap invia il comando; send=false -> inserisce il prefisso
+   nel composer (comandi che richiedono un argomento). */
+const PALETTE_COMMANDS = [
+  { cmd: '/help', descKey: 'palette.help', icon: 'ti-help-circle', send: true },
+  { cmd: '/status', descKey: 'palette.status', icon: 'ti-activity', send: true },
+  { cmd: '/goal', descKey: 'palette.goal', icon: 'ti-target', argHint: '<goal>', send: false },
+  { cmd: '/dream', descKey: 'palette.dream', icon: 'ti-sparkles', send: true },
+  { cmd: '/atlas', descKey: 'palette.atlas', icon: 'ti-map', send: true },
+];
+
 export class ChatController {
   constructor() {
     this.chatArea = document.getElementById('chat-area');
@@ -147,6 +159,10 @@ export class ChatController {
     this.sendBtn = document.getElementById('btn-send');
     this.stopBtn = document.getElementById('btn-stop');
     this.secondaryActions = document.getElementById('secondary-actions');
+    this.commandPalette = document.getElementById('command-palette');
+    this._paletteOpen = false;
+    this._paletteItems = [];
+    this._paletteIndex = 0;
 
     this._deltaBuffer = '';
     this._reasoningBuffer = '';
@@ -245,7 +261,8 @@ export class ChatController {
     this._initSessionInfo();
   }
 
-  /** Identity line — first scrollable element of the chat (replaces the fixed header). */
+  /** Identity line — chip sticky in cima alla chat: resta visibile (e
+      tappabile) anche a fondo conversazione; il tap apre "Session info". */
   _ensureIdentity() {
     if (this.identityEl && this.chatArea.contains(this.identityEl)) return;
     const el = document.createElement('div');
@@ -253,11 +270,26 @@ export class ChatController {
     el.innerHTML = '<span class="chat-identity-flower">✿</span>' +
       '<span class="chat-identity-name">' + i18n.t('chat.jenny') + '</span>' +
       '<span class="chat-identity-status"></span>' +
-      '<span class="chat-identity-label"></span>';
+      '<span class="chat-identity-label"></span>' +
+      '<button type="button" class="chat-identity-new" title="' + i18n.t('chat.newSession') + '" aria-label="' + i18n.t('chat.newSession') + '"><i class="ti ti-message-plus"></i></button>';
     this.chatArea.insertBefore(el, this.chatArea.firstChild);
     this.identityEl = el;
     this.identityStatus = el.querySelector('.chat-identity-status');
     this.identityLabel = el.querySelector('.chat-identity-label');
+    this.newChatBtn = el.querySelector('.chat-identity-new');
+    // Listener attaccati qui (alla creazione), così sopravvivono al wipe di
+    // /clear che ricrea la riga: il tap apre Session info, il bottone a
+    // destra avvia una nuova sessione.
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.chat-identity-new')) return;
+      e.stopPropagation();
+      this._showSessionInfo();
+    });
+    this.newChatBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._newSession();
+    });
   }
 
   _insertAtTop(node) {
@@ -294,9 +326,19 @@ export class ChatController {
       this._autoResize();
       this._updateSendState();
       this._updateActions();
+      this._updateCommandPalette();
     });
 
     this.input.addEventListener('keydown', (e) => {
+      if (this._paletteOpen && this._paletteItems.length) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); this._movePaletteSelection(1); return; }
+        if (e.key === 'ArrowUp') { e.preventDefault(); this._movePaletteSelection(-1); return; }
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          this._runPaletteCommand(this._paletteItems[this._paletteIndex]);
+          return;
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.sendMessage();
@@ -941,6 +983,7 @@ export class ChatController {
     }
 
     this.input.focus();
+    this._updateCommandPalette();
 
     // I messaggi possono essere arrivati mentre la vista era nascosta (scrollHeight=0 rende
     // scrollToBottom() un no-op); riallinea lo scroll ora che la vista è di nuovo visibile.
@@ -980,6 +1023,10 @@ export class ChatController {
      tutti gli effetti — copre la chat e ha una sua chiusura — ma il tasto
      Indietro lo scavalcava, uscendo dalla chat e lasciandolo a schermo. */
   handleBack() {
+    if (this._paletteOpen) {
+      this._hideCommandPalette();
+      return true;
+    }
     if (!this._sessionInfoPopover) return false;
     this._hideSessionInfo();
     return true;
@@ -992,6 +1039,7 @@ export class ChatController {
     this._hideSessionInfo();
     // Spegne il type-ahead focus: fuori dalla vista chat non deve rubare i tasti.
     this._active = false;
+    this._hideCommandPalette();
     // Per il resto è un no-op intenzionale: i listener WS restano sempre attivi (vedi
     // setupWebSocket(), bindato una sola volta nel costruttore). Il socket è condiviso tra
     // le viste e gli eventi che arrivano a vista nascosta vanno comunque processati,
@@ -2828,6 +2876,7 @@ export class ChatController {
   }
 
   async sendMessage() {
+    this._hideCommandPalette();
     const text = this.input.value.trim();
     const hasImages = this.imageHandler.count > 0;
     if (!text && !hasImages) return;
@@ -2905,6 +2954,101 @@ export class ChatController {
   stopGenerating() {
     if (!this._streaming || !sessionManager.currentKey) return;
     wsManager.sendToChat(sessionManager.currentKey, '/stop');
+  }
+
+  /* Nuova sessione: come /stop, /new è un comando che il backend dispaccia
+     inline — cancella i task attivi, azzera il contesto del modello e archivia
+     lo storico. Il transcript resta visibile, con un separatore al posto della
+     risposta. Due tap per confermare: il primo arma il bottone (3,5s), il
+     secondo esegue. */
+  _newSession() {
+    if (!sessionManager.currentKey) return;
+    const btn = this.newChatBtn;
+    if (!btn) return;
+    if (!this._newSessionArmed) {
+      this._newSessionArmed = true;
+      btn.classList.add('armed');
+      btn.title = i18n.t('chat.newSessionConfirm');
+      btn.setAttribute('aria-label', i18n.t('chat.newSessionConfirm'));
+      btn.innerHTML = '<i class="ti ti-check"></i>';
+      clearTimeout(this._newSessionArmTimer);
+      this._newSessionArmTimer = setTimeout(() => this._disarmNewSession(), 3500);
+      return;
+    }
+    this._disarmNewSession();
+    wsManager.sendToChat(sessionManager.currentKey, '/new');
+  }
+
+  _disarmNewSession() {
+    this._newSessionArmed = false;
+    clearTimeout(this._newSessionArmTimer);
+    if (this.newChatBtn) {
+      this.newChatBtn.classList.remove('armed');
+      this.newChatBtn.title = i18n.t('chat.newSession');
+      this.newChatBtn.setAttribute('aria-label', i18n.t('chat.newSession'));
+      this.newChatBtn.innerHTML = '<i class="ti ti-message-plus"></i>';
+    }
+  }
+
+  /* ── Palette comandi "/" ──────────────────────────────────────
+     Compare mentre l'utente digita "/": filtra per prefisso, navigabile con
+     ↑/↓ + Invio oppure a tap. Scompare appena l'input esce dal pattern. */
+  _updateCommandPalette() {
+    const palette = this.commandPalette;
+    if (!palette) return;
+    const v = this.input.value.trim();
+    if (!v.startsWith('/')) { this._hideCommandPalette(); return; }
+    const matches = PALETTE_COMMANDS.filter(c => c.cmd.startsWith(v));
+    if (!matches.length) { this._hideCommandPalette(); return; }
+    palette.innerHTML = matches.map((m, i) => `
+      <button type="button" class="palette-item" data-i="${i}">
+        <i class="ti ${m.icon}"></i>
+        <span class="palette-cmd">${m.cmd}${m.argHint ? `<em>${escapeHtml(m.argHint)}</em>` : ''}</span>
+        <span class="palette-desc">${i18n.t(m.descKey)}</span>
+      </button>`).join('');
+    palette.hidden = false;
+    this._paletteOpen = true;
+    this._paletteIndex = 0;
+    this._paletteItems = [...palette.querySelectorAll('.palette-item')];
+    this._paletteItems.forEach((btn) => {
+      btn.classList.toggle('sel', Number(btn.dataset.i) === 0);
+      btn.addEventListener('click', () => this._runPaletteCommand(btn));
+    });
+  }
+
+  _movePaletteSelection(delta) {
+    const n = this._paletteItems.length;
+    if (!n) return;
+    const old = this._paletteItems[this._paletteIndex];
+    if (old) old.classList.remove('sel');
+    this._paletteIndex = (this._paletteIndex + delta + n) % n;
+    this._paletteItems[this._paletteIndex].classList.add('sel');
+  }
+
+  _runPaletteCommand(btn) {
+    this._hideCommandPalette();
+    const entry = PALETTE_COMMANDS[Number(btn.dataset.i)];
+    if (!entry) return;
+    if (entry.send) {
+      // Come digitarlo a mano: bolla utente col comando + dispatch.
+      this.input.value = entry.cmd;
+      this.sendMessage();
+    } else {
+      // Comando con argomento: inserisce il prefisso e lascia completare.
+      this.input.value = entry.cmd + ' ';
+      this.input.focus();
+      this._autoResize();
+      this._updateSendState();
+      this._updateActions();
+    }
+  }
+
+  _hideCommandPalette() {
+    const palette = this.commandPalette;
+    if (palette) palette.hidden = true;
+    this._paletteOpen = false;
+    this._paletteItems = [];
+    this._paletteIndex = 0;
   }
 
   /* Mostra/nasconde il bottone Stop seguendo lo stato di streaming. */
@@ -3055,12 +3199,8 @@ export class ChatController {
   handleAction(action) {}
 
   _initSessionInfo() {
+    // Listener attaccati in _ensureIdentity, alla creazione della riga.
     this._ensureIdentity();
-    this.identityEl.style.cursor = 'pointer';
-    this.identityEl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this._showSessionInfo();
-    });
   }
 
   _showSessionInfo() {
