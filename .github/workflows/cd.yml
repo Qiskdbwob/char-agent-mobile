@@ -66,7 +66,10 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ github.ref_name }}"
+          # Senza i secret JENNY_KEYSTORE_* la release è unsigned e AGP la
+          # chiama app-release-unsigned.apk: accetta entrambi i nomi.
           RELEASE_APK="android/app/build/outputs/apk/release/app-release.apk"
+          [ -f "$RELEASE_APK" ] || RELEASE_APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           DEBUG_APK="android/app/build/outputs/apk/debug/app-debug.apk"
           test -f "$RELEASE_APK"
           test -f "$DEBUG_APK"
