@@ -12,6 +12,7 @@
     "placeholder": "Chiedi qualcosa…",
     "error": "Errore",
     "attach": "Allega",
+    "stop": "Ferma",
     "cleared": "Chat cancellata.",
     "wsError": "WebSocket non connesso. In attesa di riconnessione...",
     "agentRunning": "Agent in esecuzione",

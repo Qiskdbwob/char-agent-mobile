@@ -633,6 +633,30 @@ class TestToolGating:
             assert cls.enabled(no_android) is False, cls.name
             assert cls.disabled_reason(no_android) is None, cls.name
 
+    def test_web_tools_are_in_the_orchestrator_scope(self):
+        """I tool web esistono anche nello scope dell'orchestratore.
+
+        Regressione (0.7.1): l'orchestratore, scope di default della chat
+        principale, non li aveva — ``web_search``/``web_fetch``/``browser_*``
+        sparivano dalla chat principale e il modello finiva con "Tool not
+        found" oppure era costretto a delegare ogni lookup.
+        """
+        web_tools = [
+            AndroidWebSearchTool,
+            AndroidWebFetchTool,
+            AndroidWebBrowserOpenTool,
+            AndroidWebBrowserSnapshotTool,
+            AndroidWebBrowserClickTool,
+            AndroidWebBrowserTypeTool,
+            AndroidWebBrowserSubmitTool,
+            AndroidWebBrowserBackTool,
+            AndroidWebBrowserCloseTool,
+        ]
+        for cls in web_tools:
+            assert "core" in cls._scopes, cls.name
+            assert "subagent" in cls._scopes, cls.name
+            assert "orchestrator" in cls._scopes, cls.name
+
 
 class TestBridgeBrowserCall:
     """Decodifica del JSON del bridge interattivo (doppia codifica inclusa)."""

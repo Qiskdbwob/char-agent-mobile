@@ -5,8 +5,10 @@ name: CD
 # pubblicazione usa la CLI `gh` già presente sui runner, stessa filosofia
 # della DCO check in ci.yml (meno supply chain, meno da revisionare).
 #
-# Firma: le credenziali arrivano dai secret JENNY_KEYSTORE_* e vengono passate
-# come env a Gradle, che è già predisposto per questo (vedi commenti in
+# Firma: il keystore arriva dal secret JENNY_KEYSTORE_B64 (base64 del file
+# .jks, decodificato in un passo dedicato) e le credenziali dai secret
+# JENNY_KEYSTORE_PASSWORD / JENNY_KEY_ALIAS / JENNY_KEY_PASSWORD, passati come
+# env a Gradle, che è già predisposto per questo (vedi commenti in
 # android/app/build.gradle.kts). Se i secret non sono configurati la build
 # NON fallisce: produce un APK unsigned con un warning, come in locale.
 on:
@@ -49,16 +51,52 @@ jobs:
       # vengono scaricati da AGP al primo build.
       - uses: android-actions/setup-android@v4
 
+      # Il keystore non vive mai nel repo: il secret è il file .jks in base64.
+      # Il runner lo decodifica in un path temporaneo, che Gradle legge via
+      # JENNY_KEYSTORE_PATH. Secret assente → file assente → release unsigned
+      # (hasReleaseSigning in build.gradle.kts controlla l'esistenza del file).
+      - name: Prepare signing keystore
+        if: ${{ secrets.JENNY_KEYSTORE_B64 != '' }}
+        env:
+          JENNY_KEYSTORE_B64: ${{ secrets.JENNY_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          echo "$JENNY_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/jenny-release.jks"
+          chmod 600 "$RUNNER_TEMP/jenny-release.jks"
+          test -s "$RUNNER_TEMP/jenny-release.jks"
+          echo "signing keystore ready ($(wc -c < "$RUNNER_TEMP/jenny-release.jks") bytes)"
+
       - name: Build APKs
         env:
           # Vuoti (secret non configurati) → release unsigned, come da design.
-          JENNY_KEYSTORE_PATH: ${{ secrets.JENNY_KEYSTORE_PATH }}
+          JENNY_KEYSTORE_PATH: ${{ runner.temp }}/jenny-release.jks
           JENNY_KEYSTORE_PASSWORD: ${{ secrets.JENNY_KEYSTORE_PASSWORD }}
           JENNY_KEY_ALIAS: ${{ secrets.JENNY_KEY_ALIAS }}
           JENNY_KEY_PASSWORD: ${{ secrets.JENNY_KEY_PASSWORD }}
         run: |
           cd android
           ./gradlew --no-daemon app:assembleDebug app:assembleRelease
+
+      # Il manifest dell'updater in-app (latest.json) vive SOLO su APK
+      # firmato: un APK unsigned non è installabile dall'updater, quindi non ha
+      # senso pubblicare un manifest che lo punti. Guard sul secret di firma.
+      - name: Generate update manifest
+        if: ${{ secrets.JENNY_KEYSTORE_B64 != '' }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          RELEASE_APK="android/app/build/outputs/apk/release/app-release.apk"
+          if [ -f "$RELEASE_APK" ]; then
+            python3 scripts/release.py "$VERSION" --manifest-only \
+              --apk "$RELEASE_APK" \
+              --summary-it "Tool web di nuovo in chat, bottone Stop, browser agentico." \
+              --summary-en "Web tools back in chat, Stop button, agentic browser." \
+              --out dist/release
+          else
+            echo "no signed APK: skipping update manifest"
+          fi
 
       - name: Publish GitHub Release
         env:
@@ -76,11 +114,15 @@ jobs:
           # Nomi versionati, più chiari di app-release.apk nella pagina release.
           cp "$RELEASE_APK" "jenny-${TAG}.apk"
           cp "$DEBUG_APK" "jenny-${TAG}-debug.apk"
+          # latest.json: c'è solo quando l'APK è firmato (step precedente).
+          MANIFEST="dist/release/latest.json"
+          EXTRA=""
+          [ -f "$MANIFEST" ] && EXTRA="$MANIFEST"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # Rerun del workflow o tag già rilasciato: aggiorna gli asset.
-            gh release upload "$TAG" "jenny-${TAG}.apk" "jenny-${TAG}-debug.apk" \
+            gh release upload "$TAG" "jenny-${TAG}.apk" "jenny-${TAG}-debug.apk" $EXTRA \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$TAG" "jenny-${TAG}.apk" "jenny-${TAG}-debug.apk" \
+            gh release create "$TAG" "jenny-${TAG}.apk" "jenny-${TAG}-debug.apk" $EXTRA \
               --repo "$GITHUB_REPOSITORY" --title "Jenny $TAG" --generate-notes
           fi

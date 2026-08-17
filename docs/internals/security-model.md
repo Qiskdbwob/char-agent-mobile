@@ -29,7 +29,7 @@ When a path falls outside the boundary, the tool raises an error whose message s
 
 That phrasing is intentional — it's written to stop the model from treating a workspace-boundary rejection as a fluke worth retrying with a different tool.
 
-That roster of seven is the full set across all agents; no single agent holds it. With `agents.defaults.orchestratorMode` at its default of `true`, the agent you talk to gets only `read_file`, `list_dir` and `grep` — and its `grep` is an **index**: it returns matching file paths or per-file match counts, never the matching lines, capped at 60 files. `find_files` is not in the orchestrator's scope at all. Everything that writes goes to a subagent. This is a context-budget decision rather than a security one — a subagent's tool output doesn't stay in your conversation — but it does mean the write path and the boundary above apply to a different agent than the one you're typing to.
+That roster of seven is the full set across all agents; no single agent holds it. With `agents.defaults.orchestratorMode` at its default of `true`, the agent you talk to gets `read_file`, `list_dir`, `grep` and the web tools (`web_search`, `web_fetch`, `browser_*`) — and its `grep` is an **index**: it returns matching file paths or per-file match counts, never the matching lines, capped at 60 files. `find_files` is not in the orchestrator's scope at all. Everything that writes goes to a subagent. This is a context-budget decision rather than a security one — a subagent's tool output doesn't stay in your conversation — but it does mean the write path and the boundary above apply to a different agent than the one you're typing to.
 
 One deliberate exception: Jenny's own Python source (`jenny/`) is exposed **read-only** to the agent when `tools.file.exposePackageSource` is `true` (default), so it can inspect the framework it runs on. It is never writable through this path.
 
@@ -103,7 +103,7 @@ Two things this does **not** protect against, stated plainly: a command the agen
 - Read files inside `workspace/` (and read Jenny's own source, read-only), and locate them with an index-only `grep`.
 - Write, edit, and patch files inside `workspace/` — but with `agents.defaults.orchestratorMode` at its default of `true`, only through a subagent; the main agent has no write tool at all.
 - Download files from the web into `workspace/downloads/` — only through a subagent, for the same reason.
-- Search the web and fetch/read pages (through the hidden WebView — see [Tool reference](../reference/tools.md)) — only through a subagent, typically a `researcher`.
+- Search the web, fetch/read pages and drive the interactive browser (through the hidden WebView — see [Tool reference](../reference/tools.md)) — directly, with the same tools a `researcher` subagent gets; fetched content is treated as untrusted data, never as instructions.
 - Send you notifications and schedule reminders (`cron`).
 - Read your last-known device location, or request a fresh GPS fix, if the location toggle and the Android permission are both granted.
 - Send and receive messages over Telegram, if you've paired a bot.

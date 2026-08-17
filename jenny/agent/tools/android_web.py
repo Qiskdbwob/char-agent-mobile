@@ -445,7 +445,7 @@ async def _bridge_browser_call(
 class AndroidWebSearchTool(Tool):
     """Search the web using the Android hidden WebView."""
 
-    _scopes = {"core", "subagent"}
+    _scopes = {"core", "subagent", "orchestrator"}
 
     name = "web_search"
     description = (
@@ -555,7 +555,7 @@ class AndroidWebSearchTool(Tool):
 class AndroidWebFetchTool(Tool):
     """Fetch and extract content from a URL using the Android hidden WebView."""
 
-    _scopes = {"core", "subagent"}
+    _scopes = {"core", "subagent", "orchestrator"}
 
     name = "web_fetch"
     description = (
@@ -743,7 +743,7 @@ class _AndroidWebBrowserBase(Tool):
     di search/fetch, che tace se non c'è contesto Android.
     """
 
-    _scopes = {"core", "subagent"}
+    _scopes = {"core", "subagent", "orchestrator"}
 
     config_key = "androidWeb"
 

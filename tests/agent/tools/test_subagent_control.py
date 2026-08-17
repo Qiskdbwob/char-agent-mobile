@@ -34,15 +34,19 @@ ORCHESTRATOR_KEEPS = {
     "subagent_send",
     "cron", "message", "ui_view", "long_task", "complete_goal",
     "get_source", "get_recent_logs", "read_file", "list_dir",
+    "web_search", "web_fetch",
+    "browser_open", "browser_snapshot", "browser_click", "browser_type",
+    "browser_submit", "browser_back", "browser_close",
 }
 # Tutto cio che produce output grosso, o che scrive. ``grep`` non e piu qui:
 # in modalita orchestratore esiste come solo indice — percorsi e conteggi, mai
 # le righe — quindi trova senza gonfiare la conversazione. ``find_files`` resta
 # fuori perche ``grep`` in modalita indice fa gia lo stesso mestiere meglio.
+# I tool web NON sono piu qui: web_search/web_fetch/browser_* sono tornati
+# nella chat principale (vedi la regressione "web_search not found").
 ORCHESTRATOR_LOSES = {
     "python_exec", "write_file", "edit_file", "apply_patch", "download_file",
-    "web_search", "web_fetch", "list_exec_sessions", "write_stdin",
-    "find_files",
+    "list_exec_sessions", "write_stdin", "find_files",
 }
 
 

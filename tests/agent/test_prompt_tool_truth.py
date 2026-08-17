@@ -29,8 +29,6 @@ MENTIONED_ON_PURPOSE = {
     # Il contratto dei tool vieta esplicitamente di usare python_exec come
     # scorciatoia universale, e l'orchestratore elenca cio che NON ha.
     "python_exec",
-    "web_search",
-    "web_fetch",
     "download_file",
     "write_file",
     "edit_file",

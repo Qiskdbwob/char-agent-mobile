@@ -145,6 +145,7 @@ export class ChatController {
     this._ensureIdentity();
     this.input = document.getElementById('chat-input');
     this.sendBtn = document.getElementById('btn-send');
+    this.stopBtn = document.getElementById('btn-stop');
     this.secondaryActions = document.getElementById('secondary-actions');
 
     this._deltaBuffer = '';
@@ -200,6 +201,10 @@ export class ChatController {
     this._sessionInfoPopover = null;
     this._sessionInfoTimer = null;
     this._fileEditPaths = new Map();
+    // Un turno è "in corso" dal primo frame live (o dall'invio) fino al
+    // turn_end: è lo stato che decide se il bottone Stop è visibile. Il
+    // backend garantisce turn_end anche su /stop, quindi si ripulisce da solo.
+    this._streaming = false;
 
     // Pannello subagent: lo stato arriva dal frame WS `subagent_status` a ogni
     // transizione, e dal polling di /api/subagents mentre qualcosa gira (fra
@@ -276,6 +281,9 @@ export class ChatController {
 
   setupEventListeners() {
     this.sendBtn.addEventListener('click', () => this.sendMessage());
+    if (this.stopBtn) {
+      this.stopBtn.addEventListener('click', () => this.stopGenerating());
+    }
     document.getElementById('btn-attach').addEventListener('click', () => {
       this.imageHandler.trigger();
     });
@@ -1038,6 +1046,12 @@ export class ChatController {
 
   handleMessage(msg) {
     if (!this._applyTurnBoundary(msg)) return;
+    // Qualunque frame di turno (delta, message, tool, …) vuol dire che un
+    // turno è in corso e può essere fermato; turn_end lo chiude via
+    // _resetStreamState. La visibilità dello Stop segue questo flag.
+    if (ChatController.TURN_SCOPED_EVENTS.has(msg.event) && msg.event !== 'turn_end') {
+      this._setStreaming(true);
+    }
     switch (msg.event) {
       case 'delta':
         this._handleDelta(msg.text || '');
@@ -1381,6 +1395,7 @@ export class ChatController {
     // Annulla un frame pendente prima di azzerare i riferimenti alle bolle,
     // altrimenti scriverebbe su un contenitore ormai orfano.
     this._cancelPendingFrame();
+    this._setStreaming(false);
     this._deltaDirty = false;
     this._reasoningDirty = false;
     this._currentMsg = null;
@@ -2878,7 +2893,25 @@ export class ChatController {
       el.className = 'chat-error';
       el.textContent = i18n.t('chat.wsError');
       this.chatArea.appendChild(el);
+    } else {
+      this._setStreaming(true);
     }
+  }
+
+  /* Interrompe la generazione in corso. Il backend espone /stop come comando
+     priority: lo si invia come messaggio normale e il loop lo dispaccia inline
+     (cancella i task attivi e manda turn_end). Nessuna bolla utente: il testo
+     "/stop" non viene renderizzato qui né persistito dal server. */
+  stopGenerating() {
+    if (!this._streaming || !sessionManager.currentKey) return;
+    wsManager.sendToChat(sessionManager.currentKey, '/stop');
+  }
+
+  /* Mostra/nasconde il bottone Stop seguendo lo stato di streaming. */
+  _setStreaming(on) {
+    if (this._streaming === on) return;
+    this._streaming = on;
+    if (this.stopBtn) this.stopBtn.style.display = on ? '' : 'none';
   }
 
   scrollToBottom(force = false) {

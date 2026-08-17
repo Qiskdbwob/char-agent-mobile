@@ -119,10 +119,11 @@ class AgentDefaults(Base):
     # Modalita orchestratore: l'agente principale carica il registry con lo scope
     # "orchestrator" invece di "core" — delega il lavoro pesante ai subagent e
     # perde i tool che gonfiano la sessione dell'utente (python_exec, scrittura,
-    # patch, download, web, exec_session, search), tenendo solo lettura e
-    # controllo. Acceso di default perche e il comportamento voluto; resta un
-    # flag perche cambia in modo sostanziale cio che Jenny puo fare da sola e
-    # l'utente gira su un solo telefono, senza altro modo per tornare indietro.
+    # patch, download, exec_session, search), tenendo lettura, controllo e i tool
+    # web (web_search/web_fetch/browser_*). Acceso di default perche e il
+    # comportamento voluto; resta un flag perche cambia in modo sostanziale cio
+    # che Jenny puo fare da sola e l'utente gira su un solo telefono, senza
+    # altro modo per tornare indietro.
     orchestrator_mode: bool = Field(
         default=True,
         validation_alias=AliasChoices("orchestratorMode", "orchestrator_mode"),

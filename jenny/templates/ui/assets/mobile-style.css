@@ -729,6 +729,18 @@ body {
 }
 .compose-send i { font-size: 18px; }
 
+/* Stop button: appare accanto all'invio mentre un turno è in corso. Colore
+   d'errore di proposito — fermare è un'azione distruttiva, non una seconda
+   opzione di invio. */
+.compose-stop {
+  background: var(--error);
+  color: #fff;
+}
+.compose-stop:active {
+  transform: scale(0.92);
+}
+.compose-stop i { font-size: 18px; }
+
 .compose-send[disabled] {
   background: var(--overlay-strong);
   cursor: default;
