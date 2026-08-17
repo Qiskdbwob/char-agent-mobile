@@ -472,10 +472,20 @@ def _head_text(value: Any) -> str:
     return value[:_PROBE_CHARS] if isinstance(value, str) else str(value)[:_PROBE_CHARS]
 
 
-# Convenzione degli errori JSON di ``web_fetch``: il tool ritorna
-# ``{"error": ...}`` invece del prefisso ``Error:``, quindi senza questa voce un
-# fetch fallito verrebbe classificato ``ok`` e riassunto come "0 B".
-_JSON_ERROR_TOOLS = frozenset({"web_fetch"})
+# Convenzione degli errori JSON di ``web_fetch`` e dei tool browser: i tool
+# ritornano ``{"error": ...}`` invece del prefisso ``Error:``, quindi senza
+# queste voci un fallimento verrebbe classificato ``ok`` e riassunto come
+# successo (per fetch: "0 B"; per browser: "page loaded").
+_JSON_ERROR_TOOLS = frozenset({
+    "web_fetch",
+    "browser_open",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_submit",
+    "browser_back",
+    "browser_close",
+})
 
 
 def classify_tool_result(tool: str, result: Any, error: Any = None) -> str:
@@ -755,6 +765,69 @@ def _start_download_file(args: Mapping[str, Any]) -> str:
 
 def _end_download_file(args: Mapping[str, Any], outcome: _Outcome) -> str:
     return "saved to workspace downloads"
+
+
+# -- browser (sessione interattiva) -------------------------------------------
+#
+# Stessa regola di web_fetch: il risultato del tool può contenere testo della
+# pagina (per snapshot, per il titolo di open) — qui escono solo misure e
+# frasi nostre, mai il contenuto.
+
+
+def _start_browser_open(args: Mapping[str, Any]) -> str:
+    return f"opening {_display_url(args.get('url'))} in the browser"
+
+
+def _end_browser_open(args: Mapping[str, Any], outcome: _Outcome) -> str:
+    return "page loaded"
+
+
+def _start_browser_snapshot(args: Mapping[str, Any]) -> str:
+    return "reading the current page"
+
+
+def _end_browser_snapshot(args: Mapping[str, Any], outcome: _Outcome) -> str:
+    return f"{_fmt_bytes(outcome.size)}, {_plural(outcome.lines, 'line')}"
+
+
+def _start_browser_click(args: Mapping[str, Any]) -> str:
+    return f"clicking {_ident(args.get('selector'), limit=40)}"
+
+
+def _end_browser_click(args: Mapping[str, Any], outcome: _Outcome) -> str:
+    return "clicked"
+
+
+def _start_browser_type(args: Mapping[str, Any]) -> str:
+    return f"typing into {_ident(args.get('selector'), limit=40)}"
+
+
+def _end_browser_type(args: Mapping[str, Any], outcome: _Outcome) -> str:
+    return "typed"
+
+
+def _start_browser_submit(args: Mapping[str, Any]) -> str:
+    return "submitting the form"
+
+
+def _end_browser_submit(args: Mapping[str, Any], outcome: _Outcome) -> str:
+    return "form submitted"
+
+
+def _start_browser_back(args: Mapping[str, Any]) -> str:
+    return "going back in browser history"
+
+
+def _end_browser_back(args: Mapping[str, Any], outcome: _Outcome) -> str:
+    return "went back"
+
+
+def _start_browser_close(args: Mapping[str, Any]) -> str:
+    return "closing the browser session"
+
+
+def _end_browser_close(args: Mapping[str, Any], outcome: _Outcome) -> str:
+    return "browser closed"
 
 
 # -- python_exec -------------------------------------------------------------
@@ -1052,6 +1125,13 @@ _FORMATTERS: dict[str, tuple[_StartFn, _EndFn]] = {
     "web_search": (_start_web_search, _end_web_search),
     "web_fetch": (_start_web_fetch, _end_web_fetch),
     "download_file": (_start_download_file, _end_download_file),
+    "browser_open": (_start_browser_open, _end_browser_open),
+    "browser_snapshot": (_start_browser_snapshot, _end_browser_snapshot),
+    "browser_click": (_start_browser_click, _end_browser_click),
+    "browser_type": (_start_browser_type, _end_browser_type),
+    "browser_submit": (_start_browser_submit, _end_browser_submit),
+    "browser_back": (_start_browser_back, _end_browser_back),
+    "browser_close": (_start_browser_close, _end_browser_close),
     "python_exec": (_start_python_exec, _end_python_exec),
     "write_stdin": (_start_write_stdin, _end_write_stdin),
     "list_exec_sessions": (_start_list_exec_sessions, _end_list_exec_sessions),

@@ -201,11 +201,13 @@ Defaults — allowed: `os`, `sys`, `pathlib`, `json`, `re`, `math`, `datetime`, 
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `tools.androidWeb.enable` | bool | `true` | Registers `web_search` and `web_fetch`. This is the only switch the code checks — the nested `search.enable` / `fetch.enable` fields exist in the schema but are not consulted, so they cannot disable one half on their own. |
+| `tools.androidWeb.enable` | bool | `true` | Registers `web_search`, `web_fetch` and the interactive browser tools (`browser_open`/`browser_snapshot`/`browser_click`/`browser_type`/`browser_submit`/`browser_back`/`browser_close`). This is the only switch the code checks — the nested `search.enable` / `fetch.enable` fields exist in the schema but are not consulted, so they cannot disable one half on their own. |
 | `tools.androidWeb.search.searchEngine` | string | `"bing"` | The only supported value; the settings endpoint rejects anything else. |
 | `tools.androidWeb.search.maxResults` | int | `5` | Results per search. The UI validates 1–10. |
 | `tools.androidWeb.search.timeout` | int | `30` | Seconds per search. The UI validates 1–120. Also used as the fetch timeout. |
 | `tools.androidWeb.fetch.maxChars` | int | `50000` | Max characters extracted per page. The UI validates 1000–200000. |
+| `tools.androidWeb.browser.timeout` | int | `30` | Seconds per browser operation (open, snapshot, click, …). The UI validates 1–120. |
+| `tools.androidWeb.browser.maxSnapshotChars` | int | `20000` | Cap on the visible text returned by `browser_snapshot` (the renderer already truncates at 40,000; this lowers the token cost further). |
 
 ### tools.location
 

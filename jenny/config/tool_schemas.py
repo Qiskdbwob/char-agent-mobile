@@ -132,12 +132,29 @@ class AndroidWebFetchConfig(Base):
     max_chars: int = 50000
 
 
+class AndroidWebBrowserConfig(Base):
+    """Android WebView-backed interactive browser configuration.
+
+    La sessione interattiva (``browser_open``/``browser_snapshot``/
+    ``browser_click``/``browser_type``/``browser_submit``/``browser_back``/
+    ``browser_close``) condivide il WebView nascosto di search/fetch, quindi è
+    attiva o spenta insieme a ``androidWeb.enable``: non serve un toggle a
+    parte. ``max_snapshot_chars`` è il capo autorevole sul testo dello
+    snapshot (il renderer tronca già a 40k, qui si può abbassare per
+    risparmiare token); ``timeout`` vale per ogni singola operazione.
+    """
+
+    timeout: int = 30
+    max_snapshot_chars: int = 20000
+
+
 class AndroidWebToolsConfig(Base):
     """Android-only WebView web tools configuration."""
 
     enable: bool = True
     search: AndroidWebSearchConfig = Field(default_factory=AndroidWebSearchConfig)
     fetch: AndroidWebFetchConfig = Field(default_factory=AndroidWebFetchConfig)
+    browser: AndroidWebBrowserConfig = Field(default_factory=AndroidWebBrowserConfig)
 
 
 class LocationConfig(Base):

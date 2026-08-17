@@ -15,7 +15,9 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import org.json.JSONException
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.io.ByteArrayInputStream
 import java.net.InetAddress
 import java.net.UnknownHostException
@@ -31,6 +33,15 @@ import java.util.concurrent.atomic.AtomicReference
  * The WebView is a real Chrome browser instance: it executes JS, handles TLS,
  * cookies and localStorage just like the visible browser. It is kept hidden
  * (GONE) and reused across calls to amortise startup cost.
+ *
+ * Oltre a `searchBing`/`fetchUrl` (one-shot: naviga, valuta, ritorna) il bridge
+ * espone una **sessione di browsing interattiva** per l'agent automation:
+ * `browserOpen` carica una pagina e la tiene; `browserSnapshot` restituisce
+ * testo + elementi cliccabili con selettori; `browserClick`/`browserType`/
+ * `browserSubmit` agiscono sulla pagina correntemente caricata;
+ * `browserBack`/`browserClose` chiudono il giro. Cookie, localStorage e login
+ * persistono tra una chiamata e l'altra (è lo stesso WebView condiviso), quindi
+ * il modello può compiere flussi reali (login, form, navigazioni multi-pagina).
  */
 class AgenticSearchBridge(context: Context) {
 
@@ -41,11 +52,45 @@ class AgenticSearchBridge(context: Context) {
         private const val USER_AGENT_MOBILE =
             "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+
+        // Limiti del browser interattivo: snapshot troncato ed elementi
+        // raccolti per non inondare il contesto del modello. L'ulteriore
+        // troncatura in Python (AndroidWebBrowserConfig.maxSnapshotChars)
+        // resta il capo autorevole; questo è il tetto lato renderer.
+        private const val SNAPSHOT_MAX_TEXT_CHARS = 40000
+        private const val SNAPSHOT_MAX_ELEMENTS = 50
+
+        // Budget di attesa dopo un'azione che *può* navigare (click, submit):
+        // se la pagina parte, onPageFinished sblocca subito; se non naviga
+        // (SPA, click no-op) si esce comunque dopo questo tempo invece di
+        // tenere il turno dell'agente fermo per l'intero timeout.
+        private const val ACTION_SETTLE_SECONDS = 4L
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private val appContext = context.applicationContext
     private var webView: WebView? = null
+
+    // ── Stato della sessione interattiva ────────────────────────────────────
+    //
+    // ``browserPageLoaded`` distingue "c'è una pagina su cui agire" dalla
+    // WebView appena creata (about:blank). Il WebView resta lo stesso usato
+    // da search/fetch: le sessioni interattive condividono cookie e renderer,
+    // e una chiamata a fetchUrl in mezzo a una sessione semplicemente naviga
+    // altrove (lo stato interattivo non sopravvive a una navigazione esterna).
+    private var browserPageLoaded = false
+
+    // Latch osservato dai callback del WebViewClient *persistente*: lo si
+    // sostituisce a ogni attesa di navigazione, così onPageFinished/
+    // onReceivedError sbloccano solo l'attesa in corso. Tutti i callback
+    // girano sul main thread, quindi lo scambio non ha race.
+    private var navigationLatch: CountDownLatch? = null
+    private var pendingError: String? = null
+
+    // Cache DNS per-call degli host già controllati: `shouldInterceptRequest`
+    // gira su thread di lavoro e una pagina genera decine di richieste sugli
+    // stessi host. Bounded per costruzione (svuotata a ogni navigazione).
+    private val dnsCache = ConcurrentHashMap<String, Boolean>()
 
     // ── Pavimento di sicurezza per le URL ──────────────────────────────────
     //
@@ -119,10 +164,9 @@ class AgenticSearchBridge(context: Context) {
     /**
      * Qualunque risorsa (main frame compreso): gira su un thread di lavoro
      * (`shouldInterceptRequest` è documentato per girare fuori dal main
-     * thread), quindi qui il DNS è concesso. `cache` è per-call: fresca a ogni
-     * pagina e bounded per costruzione.
+     * thread), quindi qui il DNS è concesso.
      */
-    private fun isRequestSafe(url: Uri, cache: MutableMap<String, Boolean>): Boolean {
+    private fun isRequestSafe(url: Uri): Boolean {
         val scheme = url.scheme?.lowercase(Locale.ROOT)
         // about:/data:/blob: non toccano la rete, nessun filtro necessario.
         if (scheme == "about" || scheme == "data" || scheme == "blob") return true
@@ -130,11 +174,11 @@ class AgenticSearchBridge(context: Context) {
         val host = normalizedHost(url) ?: return false
         if (host.isEmpty()) return false
         if (looksLikeIpLiteral(host)) return !isLiteralBlockedAddress(host)
-        return !isBlockedHostname(host, cache)
+        return !isBlockedHostname(host)
     }
 
-    private fun isBlockedHostname(host: String, cache: MutableMap<String, Boolean>): Boolean {
-        cache[host]?.let { return it }
+    private fun isBlockedHostname(host: String): Boolean {
+        dnsCache[host]?.let { return it }
         val blocked = try {
             InetAddress.getAllByName(host).any { addr ->
                 addr.isAnyLocalAddress || addr.isLoopbackAddress ||
@@ -145,7 +189,7 @@ class AgenticSearchBridge(context: Context) {
             // da sondare.
             false
         }
-        cache[host] = blocked
+        dnsCache[host] = blocked
         return blocked
     }
 
@@ -185,6 +229,76 @@ class AgenticSearchBridge(context: Context) {
                     return super.onConsoleMessage(msg)
                 }
             }
+            webViewClient = makeGuardedClient()
+        }
+    }
+
+    /**
+     * Il WebViewClient è **persistente** (installato una volta sola): i suoi
+     * callback devono continuare a girare tra una chiamata e l'altra della
+     * sessione interattiva, perché un click avviato da `browserClick` naviga
+     * *dopo* che la chiamata è tornata al chiamante. Contiene gli stessi guard
+     * SSRF di prima, su ogni navigazione e ogni risorsa.
+     */
+    private fun makeGuardedClient(): WebViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+            val navUrl = request?.url ?: return false
+            if (!isMainFrameSafe(navUrl)) {
+                Log.w(TAG, "Blocked main-frame navigation to $navUrl")
+                return true
+            }
+            return super.shouldOverrideUrlLoading(view, request)
+        }
+
+        override fun shouldInterceptRequest(
+            view: WebView?,
+            request: WebResourceRequest?
+        ): WebResourceResponse? {
+            val reqUrl = request?.url
+            if (reqUrl != null && !isRequestSafe(reqUrl)) {
+                Log.w(TAG, "Blocked request to $reqUrl")
+                return WebResourceResponse(
+                    "text/plain", "utf-8", 403, "Forbidden",
+                    ByteArrayInputStream("blocked by network policy".toByteArray(Charsets.UTF_8))
+                )
+            }
+            return super.shouldInterceptRequest(view, request)
+        }
+
+        override fun onReceivedError(
+            view: WebView?,
+            request: WebResourceRequest?,
+            error: WebResourceError?
+        ) {
+            if (request?.isForMainFrame != false) {
+                val msg = "WebView error: ${error?.description ?: "unknown"} (${error?.errorCode ?: -1})"
+                Log.e(TAG, msg)
+                pendingError = msg
+                navigationLatch?.countDown()
+            }
+        }
+
+        override fun onReceivedHttpError(
+            view: WebView?,
+            request: WebResourceRequest?,
+            errorResponse: WebResourceResponse?
+        ) {
+            if (request?.isForMainFrame != false) {
+                val status = errorResponse?.statusCode ?: -1
+                val msg = "WebView HTTP error: $status for ${request?.url ?: "main frame"}"
+                Log.e(TAG, msg)
+                pendingError = msg
+                navigationLatch?.countDown()
+            }
+        }
+
+        override fun onPageStarted(view: WebView?, startedUrl: String?, favicon: android.graphics.Bitmap?) {
+            Log.d(TAG, "onPageStarted: $startedUrl")
+        }
+
+        override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+            Log.d(TAG, "onPageFinished: $finishedUrl (error=${pendingError})")
+            navigationLatch?.countDown()
         }
     }
 
@@ -260,6 +374,198 @@ class AgenticSearchBridge(context: Context) {
         return evaluateOnPage(url, js, timeoutSeconds)
     }
 
+    // ── Sessione di browsing interattiva ────────────────────────────────────
+    //
+    // Contratto col lato Python (android_web.py): ogni metodo risponde con un
+    // JSON object; su fallimento porta `error` e nient'altro. Gli errori
+    // strutturati (sessione non aperta, selettore non trovato) NON distruggono
+    // il WebView: cookie e pagina restano, e il modello può correggere il tiro.
+
+    /**
+     * Apre [url] e attende il caricamento. Inizia (o riavvia) la sessione
+     * interattiva: da qui in poi snapshot/click/type/submit/back agiscono sulla
+     * pagina corrente. Risposta: { "ok": true, "url": ..., "title": ... }.
+     */
+    fun browserOpen(url: String, timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS): String {
+        Log.d(TAG, "browserOpen ENTER: url=$url timeout=$timeoutSeconds")
+        val result = navigateAndWait(url, timeoutSeconds)
+        browserPageLoaded = result.optString("error").isEmpty()
+        return result.toString()
+    }
+
+    /**
+     * Estrae la pagina corrente: { "url", "title", "text", "elements" } con
+     * ``elements`` = elenco dei controlli interattivi (link, bottoni, input,
+     * select, textarea) completi di selettore CSS stabile per l'uso nei tool
+     * successivi.
+     */
+    fun browserSnapshot(timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS): String {
+        if (!browserPageLoaded) {
+            return errorJson("browser session is not open; call browser_open(url) first")
+        }
+        return decodeJsResult(evaluateOnCurrentPage(SNAPSHOT_JS, timeoutSeconds)).toString()
+    }
+
+    /**
+     * Clicca l'elemento individuato da [selector] (CSS selector). Se il click
+     * avvia una navigazione, attende che la nuova pagina finisca (budget
+     * `ACTION_SETTLE_SECONDS`); se non naviga, esce comunque dopo il budget.
+     * Risposta: { "ok": true, "found": true, "url": ... }.
+     */
+    fun browserClick(selector: String, timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS): String {
+        if (!browserPageLoaded) {
+            return errorJson("browser session is not open; call browser_open(url) first")
+        }
+        val js = """
+            (function() {
+                const sel = ${JSONObject.quote(selector)};
+                let el;
+                try { el = document.querySelector(sel); } catch (e) {
+                    return JSON.stringify({found: false, error: 'invalid selector: ' + e.message});
+                }
+                if (!el) return JSON.stringify({found: false, error: 'no element matches ' + sel});
+                el.scrollIntoView({block: 'center'});
+                el.click();
+                return JSON.stringify({found: true, tag: el.tagName.toLowerCase()});
+            })()
+        """.trimIndent()
+        val result = decodeJsResult(evaluateOnCurrentPage(js, timeoutSeconds))
+        if (result.optString("error").isNotEmpty() || !result.optBoolean("found", false)) {
+            return result.toString()
+        }
+        waitForPageOrSettle(ACTION_SETTLE_SECONDS)
+        return JSONObject()
+            .put("ok", true)
+            .put("found", true)
+            .put("url", currentUrl())
+            .toString()
+    }
+
+    /**
+     * Compila [text] nell'elemento di [selector] (input/textarea), usando il
+     * setter nativo + eventi `input`/`change` così funziona anche coi framework
+     * che ascoltano i cambi di valore (React e simili). Non naviga.
+     */
+    fun browserType(selector: String, text: String, timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS): String {
+        if (!browserPageLoaded) {
+            return errorJson("browser session is not open; call browser_open(url) first")
+        }
+        val js = """
+            (function() {
+                const sel = ${JSONObject.quote(selector)};
+                const value = ${JSONObject.quote(text)};
+                let el;
+                try { el = document.querySelector(sel); } catch (e) {
+                    return JSON.stringify({found: false, error: 'invalid selector: ' + e.message});
+                }
+                if (!el) return JSON.stringify({found: false, error: 'no element matches ' + sel});
+                if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') {
+                    return JSON.stringify({found: false, error: 'element is not an input/textarea'});
+                }
+                const proto = el.tagName === 'TEXTAREA'
+                    ? HTMLTextAreaElement.prototype
+                    : HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                setter.call(el, value);
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                el.focus();
+                return JSON.stringify({found: true});
+            })()
+        """.trimIndent()
+        return decodeJsResult(evaluateOnCurrentPage(js, timeoutSeconds)).toString()
+    }
+
+    /**
+     * Invia il form: usa [selector] se presente (form o controllo submit),
+     * altrimenti il primo submit/input[type=submit] o form della pagina.
+     * Come il click, attende un'eventuale navigazione entro il budget di settle.
+     */
+    fun browserSubmit(selector: String?, timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS): String {
+        if (!browserPageLoaded) {
+            return errorJson("browser session is not open; call browser_open(url) first")
+        }
+        val selLit = JSONObject.quote(selector ?: "")
+        val js = """
+            (function() {
+                const sel = $selLit;
+                let el = null;
+                if (sel) { try { el = document.querySelector(sel); } catch (e) { /* sotto */ } }
+                if (!el) {
+                    el = document.querySelector(
+                        'button[type="submit"], input[type="submit"], input[type="image"], form'
+                    );
+                }
+                if (!el) return JSON.stringify({found: false, error: 'no submit control found'});
+                if (el.tagName === 'FORM') {
+                    if (el.requestSubmit) { el.requestSubmit(); } else { el.submit(); }
+                } else if (el.form && el.form.requestSubmit) {
+                    el.form.requestSubmit(el);
+                } else {
+                    el.click();
+                }
+                return JSON.stringify({found: true, tag: el.tagName.toLowerCase()});
+            })()
+        """.trimIndent()
+        val result = decodeJsResult(evaluateOnCurrentPage(js, timeoutSeconds))
+        if (result.optString("error").isNotEmpty() || !result.optBoolean("found", false)) {
+            return result.toString()
+        }
+        waitForPageOrSettle(ACTION_SETTLE_SECONDS)
+        return JSONObject()
+            .put("ok", true)
+            .put("found", true)
+            .put("url", currentUrl())
+            .toString()
+    }
+
+    /**
+     * Torna alla pagina precedente nella history del WebView (una navigazione
+     * interattiva di back, non un reset). Attende il caricamento completo.
+     */
+    fun browserBack(timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS): String {
+        if (!browserPageLoaded) {
+            return errorJson("browser session is not open; call browser_open(url) first")
+        }
+        val wv = webView ?: return errorJson("browser is not initialized")
+        val wentBack = AtomicReference<Boolean>(false)
+        val latch = CountDownLatch(1)
+        handler.post {
+            // Il latch va posato PRIMA di goBack: se la pagina vecchia non c'è
+            // (o goBack fallisce), lo contiamo giù subito; se la navigazione
+            // parte, onPageFinished lo sblocca. Stesso ordine di
+            // waitForPageOrSettle, ma atomico nel post per non perdere il
+            // countDown nel caso "nessuna history".
+            navigationLatch = latch
+            val ok = wv.canGoBack() && wv.goBack()
+            wentBack.set(ok)
+            if (!ok) latch.countDown()
+        }
+        latch.await(timeoutSeconds, TimeUnit.SECONDS)
+        if (wentBack.get() != true) {
+            return errorJson("no previous page in browser history")
+        }
+        return JSONObject().put("ok", true).put("url", currentUrl()).toString()
+    }
+
+    /**
+     * Chiude la sessione interattiva: scarica la pagina corrente (libera il
+     * renderer) e resetta lo stato. I cookie restano — una riapertura
+     * successiva ritrova i login — perché il WebView è condiviso con
+     * search/fetch e distruggerli costerebbe anche il warm-up del renderer.
+     */
+    fun browserClose(): String {
+        Log.d(TAG, "browserClose")
+        handler.post {
+            webView?.stopLoading()
+            // about:blank rilascia il documento pesante ma tiene vivo il
+            // renderer per il chiamante successivo (search/fetch o un nuovo open).
+            webView?.loadUrl("about:blank")
+        }
+        browserPageLoaded = false
+        return JSONObject().put("ok", true).toString()
+    }
+
     /**
      * Destroy the hidden WebView and release resources.
      */
@@ -270,132 +576,188 @@ class AgenticSearchBridge(context: Context) {
             webView?.destroy()
             webView = null
         }
+        browserPageLoaded = false
+    }
+
+    private fun errorJson(message: String): String =
+        JSONObject().apply { put("error", message) }.toString()
+
+    private fun currentUrl(): String = webView?.url ?: ""
+
+    /**
+     * Carica [url], attende la fine del caricamento e restituisce
+     * { "url": ..., "title": ... } o { "error": ... }. Applica il pavimento
+     * SSRF sull'URL iniziale e lascia al client persistente i guard su
+     * redirect/risorse.
+     */
+    private fun navigateAndWait(url: String, timeoutSeconds: Long): JSONObject {
+        val initial = Uri.parse(url)
+        if (!isMainFrameSafe(initial)) {
+            Log.w(TAG, "Blocked initial URL: $url")
+            return JSONObject().apply { put("error", "Blocked URL: $url") }
+        }
+        ensureWebView()
+        val wv = webView!!
+        pendingError = null
+        dnsCache.clear()
+        val latch = CountDownLatch(1)
+        navigationLatch = latch
+        handler.post {
+            wv.loadUrl(url)
+        }
+        val completed = latch.await(timeoutSeconds, TimeUnit.SECONDS)
+        if (pendingError != null) {
+            handler.post { wv.stopLoading() }
+            return JSONObject().apply { put("error", pendingError) }
+        }
+        if (!completed) {
+            handler.post { wv.stopLoading() }
+            return JSONObject().apply { put("error", "WebView timeout after ${timeoutSeconds}s for $url") }
+        }
+        // Il titolo lo si legge con una valutazione sincrona sulla pagina
+        // appena caricata (il post asincrono per ``wv.title`` sarebbe in race
+        // con la lettura qui sotto).
+        val title = try {
+            val raw = evaluateOnCurrentPage("document.title || ''", 5)
+            (JSONTokener(raw).nextValue() as? String) ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("url", wv.url ?: url)
+            .put("title", title)
     }
 
     /**
-     * Load [url], wait for page finish, then run [js] and return the result.
-     * Runs on the main thread and blocks the calling thread.
+     * Valuta [js] sulla pagina **corrente**, senza navigare. Ritorna il valore
+     * grezzo della callback di `evaluateJavascript` (già JSON-encoded da
+     * Chromium), oppure una stringa JSON con `error`.
+     */
+    private fun evaluateOnCurrentPage(js: String, timeoutSeconds: Long): String {
+        val wv = webView
+        if (wv == null) return errorJson("browser is not initialized")
+        val latch = CountDownLatch(1)
+        val ref = AtomicReference<String?>(null)
+        handler.post {
+            wv.evaluateJavascript(js) { value ->
+                ref.set(value)
+                latch.countDown()
+            }
+        }
+        val completed = latch.await(timeoutSeconds, TimeUnit.SECONDS)
+        if (!completed) {
+            return errorJson("WebView evaluate timeout after ${timeoutSeconds}s")
+        }
+        return ref.get() ?: "null"
+    }
+
+    /**
+     * Attende che la navigazione in corso finisca (onPageFinished/errore
+     * contano giù il latch), con [timeoutSeconds] come tetto: se la pagina non
+     * naviga (click no-op, SPA), l'attesa scade e si prosegue comunque.
+     */
+    private fun waitForPageOrSettle(timeoutSeconds: Long): Boolean {
+        val latch = CountDownLatch(1)
+        handler.post { navigationLatch = latch }
+        return latch.await(timeoutSeconds, TimeUnit.SECONDS)
+    }
+
+    /**
+     * Decodifica il valore di una callback di `evaluateJavascript`: Chromium
+     * JSON-encoda il valore di ritorno, e i nostri script ritornano a loro
+     * volta `JSON.stringify(...)`, quindi il payload arriva doppiamente
+     * codificato (una stringa JSON che contiene JSON). Srotola fino all'oggetto.
+     */
+    private fun decodeJsResult(raw: String?): JSONObject {
+        if (raw.isNullOrBlank() || raw == "null") {
+            return errorJson("page returned no result")
+        }
+        return try {
+            var parsed: Any = JSONTokener(raw).nextValue()
+            if (parsed is String) {
+                try {
+                    parsed = JSONTokener(parsed).nextValue()
+                } catch (e: JSONException) {
+                    // Il valore non era JSON annidato: resta la stringa.
+                }
+            }
+            if (parsed is JSONObject) parsed else errorJson("unexpected result type: ${parsed.javaClass.simpleName}")
+        } catch (e: JSONException) {
+            errorJson("invalid result from page: ${e.message}")
+        }
+    }
+
+    /**
+     * Carica [url], attende la fine e valuta [js] sulla pagina risultante
+     * (comportamento one-shot storico di search/fetch). Restituisce il valore
+     * grezzo della callback, o un JSON object con `error`.
      */
     private fun evaluateOnPage(url: String, js: String, timeoutSeconds: Long): String {
         Log.d(TAG, "evaluateOnPage ENTER: url=$url timeout=$timeoutSeconds")
-        val latch = CountDownLatch(1)
-        val ref = AtomicReference<String>("")
-        val errorRef = AtomicReference<String?>(null)
-        // Cache DNS per-call dei host già controllati: `shouldInterceptRequest`
-        // gira su thread di lavoro e una pagina di Bing genera decine di
-        // richieste sugli stessi host. Fresca a ogni pagina, bounded per
-        // costruzione.
-        val dnsCache = ConcurrentHashMap<String, Boolean>()
-
-        handler.post {
-            Log.d(TAG, "evaluateOnPage: setting up WebViewClient and loading URL")
-            // Difesa in profondità sull'URL iniziale: Python lo ha già
-            // validato, ma se un giorno quel controllo salta, qui non si carica
-            // nulla che non sia http(s) pubblico.
-            val initial = Uri.parse(url)
-            if (!isMainFrameSafe(initial)) {
-                Log.w(TAG, "Blocked initial URL: $url")
-                errorRef.set("Blocked URL: $url")
-                latch.countDown()
-                return@post
-            }
-            ensureWebView()
-            val wv = webView!!
-            wv.webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                    val navUrl = request?.url ?: return false
-                    if (!isMainFrameSafe(navUrl)) {
-                        Log.w(TAG, "Blocked main-frame navigation to $navUrl")
-                        return true
-                    }
-                    return super.shouldOverrideUrlLoading(view, request)
-                }
-
-                override fun shouldInterceptRequest(
-                    view: WebView?,
-                    request: WebResourceRequest?
-                ): WebResourceResponse? {
-                    val reqUrl = request?.url
-                    if (reqUrl != null && !isRequestSafe(reqUrl, dnsCache)) {
-                        Log.w(TAG, "Blocked request to $reqUrl")
-                        return WebResourceResponse(
-                            "text/plain", "utf-8", 403, "Forbidden",
-                            ByteArrayInputStream("blocked by network policy".toByteArray(Charsets.UTF_8))
-                        )
-                    }
-                    return super.shouldInterceptRequest(view, request)
-                }
-
-                override fun onReceivedError(
-                    view: WebView?,
-                    request: WebResourceRequest?,
-                    error: WebResourceError?
-                ) {
-                    if (request?.isForMainFrame != false) {
-                        val msg = "WebView error: ${error?.description ?: "unknown"} (${error?.errorCode ?: -1})"
-                        Log.e(TAG, msg)
-                        errorRef.set(msg)
-                        latch.countDown()
-                    }
-                }
-
-                override fun onReceivedHttpError(
-                    view: WebView?,
-                    request: WebResourceRequest?,
-                    errorResponse: android.webkit.WebResourceResponse?
-                ) {
-                    if (request?.isForMainFrame != false) {
-                        val status = errorResponse?.statusCode ?: -1
-                        val msg = "WebView HTTP error: $status for ${request?.url ?: url}"
-                        Log.e(TAG, msg)
-                        errorRef.set(msg)
-                        latch.countDown()
-                    }
-                }
-
-                override fun onPageStarted(view: WebView?, startedUrl: String?, favicon: android.graphics.Bitmap?) {
-                    Log.d(TAG, "onPageStarted: $startedUrl")
-                }
-
-                override fun onPageFinished(view: WebView?, finishedUrl: String?) {
-                    Log.d(TAG, "onPageFinished: $finishedUrl (error=${errorRef.get()})")
-                    if (errorRef.get() != null) {
-                        latch.countDown()
-                        return
-                    }
-                    Log.d(TAG, "evaluateOnPage: running evaluateJavascript")
-                    view?.evaluateJavascript(js) { value ->
-                        Log.d(TAG, "evaluateJavascript callback: value length=${value?.length ?: 0} null=${value == null}")
-                        ref.set(value ?: "")
-                        latch.countDown()
-                    }
-                }
-            }
-            Log.d(TAG, "evaluateOnPage: calling loadUrl($url)")
-            wv.loadUrl(url)
-            Log.d(TAG, "evaluateOnPage: loadUrl returned (post)")
+        val nav = navigateAndWait(url, timeoutSeconds)
+        if (nav.optString("error").isNotEmpty()) {
+            return nav.toString()
         }
-
-        Log.d(TAG, "evaluateOnPage: waiting on latch...")
-        val completed = latch.await(timeoutSeconds, TimeUnit.SECONDS)
-        Log.d(TAG, "evaluateOnPage: latch completed=$completed error=${errorRef.get()}")
-
-        if (errorRef.get() != null) {
-            handler.post { webView?.stopLoading() }
-            return JSONObject().apply {
-                put("error", errorRef.get())
-            }.toString()
-        }
-        if (!completed) {
-            handler.post { webView?.stopLoading() }
-            val msg = "WebView timeout after ${timeoutSeconds}s for $url"
-            Log.w(TAG, msg)
-            return JSONObject().apply {
-                put("error", msg)
-            }.toString()
-        }
-
-        Log.d(TAG, "evaluateOnPage EXIT: ref length=${ref.get().length}")
-        return ref.get()
+        return evaluateOnCurrentPage(js, timeoutSeconds)
     }
+
+    // JS di snapshot: testo visibile + controlli interattivi con selettore CSS
+    // stabile. Viene eseguito nel contesto della pagina, quindi usa solo API
+    // standard del browser (CSS.escape è supportato da Chrome da tempo).
+    private val SNAPSHOT_JS = """
+        (function() {
+            function cssPath(el) {
+                if (!el || el.nodeType !== 1) return '';
+                if (el.id) return '#' + CSS.escape(el.id);
+                var parts = [];
+                var node = el;
+                while (node && node.nodeType === 1 && parts.length < 10) {
+                    var tag = node.tagName.toLowerCase();
+                    if (node.id) { parts.unshift('#' + CSS.escape(node.id)); break; }
+                    var parent = node.parentNode;
+                    if (!parent || parent.nodeType !== 1) { parts.unshift(tag); break; }
+                    var siblings = Array.prototype.filter.call(
+                        parent.children, function (c) { return c.tagName === node.tagName; }
+                    );
+                    var idx = siblings.indexOf(node) + 1;
+                    parts.unshift(tag + ':nth-of-type(' + idx + ')');
+                    node = parent;
+                }
+                return parts.join(' > ');
+            }
+            function shortText(s, max) {
+                s = (s || '').replace(/[\s\u00a0]+/g, ' ').trim();
+                return s.length > max ? s.slice(0, max) + '…' : s;
+            }
+            var els = document.querySelectorAll(
+                'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [onclick]'
+            );
+            var out = [];
+            for (var i = 0; i < els.length && out.length < $SNAPSHOT_MAX_ELEMENTS; i++) {
+                var el = els[i];
+                var rect = el.getBoundingClientRect();
+                if (rect.width === 0 && rect.height === 0) continue;
+                var tag = el.tagName.toLowerCase();
+                var item = { tag: tag, selector: cssPath(el) };
+                var label = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '')
+                    .replace(/[\s\u00a0]+/g, ' ').trim();
+                if (label) item.label = shortText(label, 120);
+                if (el.name) item.name = el.name;
+                if (el.id) item.id = el.id;
+                if (tag === 'a' && el.href) item.href = el.href;
+                if ((tag === 'input' || tag === 'textarea') && 'value' in el) {
+                    item.value = shortText(el.value, 80);
+                }
+                if (el.type) item.type = el.type;
+                out.push(item);
+            }
+            return JSON.stringify({
+                url: location.href,
+                title: document.title || '',
+                text: (document.body ? document.body.innerText : '').slice(0, $SNAPSHOT_MAX_TEXT_CHARS),
+                elements: out
+            });
+        })()
+    """.trimIndent()
 }
