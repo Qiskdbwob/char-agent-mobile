@@ -51,7 +51,7 @@ android {
         // versionName tracks the Python package version in pyproject.toml —
         // keep the two in sync when releasing.
         versionCode = 13
-        versionName = "0.7.4"
+        versionName = "0.7.5"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
