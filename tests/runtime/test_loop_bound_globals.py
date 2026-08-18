@@ -50,6 +50,7 @@ ALLOWED: dict[str, str] = {
     "jenny/agent/tools/android_web.py:_BRIDGE_LOCK": "reset_android_web_state",
     "jenny/config/store.py:_LOCK": "reset_config_store_state",
     "jenny/runtime/location.py:_BRIDGE_LOCK": "reset_location_state",
+    "jenny/runtime/dream_lock.py:_dream_lock": "reset_dream_state",
     "jenny/runtime/notifier.py:_BRIDGE_LOCK": "reset_notifier_state",
     "jenny/runtime/power.py:_BRIDGE_LOCK": "reset_power_state",
     "jenny/runtime/power.py:_STATE_LOCK": "reset_power_state",

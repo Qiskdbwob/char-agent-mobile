@@ -25,8 +25,10 @@ class _FakeMemory:
     def __init__(self, file_states: FileStates | None) -> None:
         self.cursor: int | None = None
         self.tools = SimpleNamespace(file_states=file_states)
+        self.prompt_builds = 0
 
     def build_dream_prompt(self, **_kwargs):
+        self.prompt_builds += 1
         return ("prompt di consolidamento", 42)
 
     def build_dream_tools(self):
@@ -108,3 +110,48 @@ async def test_cursor_held_when_turn_did_not_complete(tmp_path: Path) -> None:
     await dispatcher.dispatch(_DREAM_JOB)
 
     assert memory.cursor is None
+
+
+async def test_dream_cron_skips_when_another_run_is_in_progress(tmp_path: Path) -> None:
+    """Due Dream concorrenti (cron + manuale): se un run è già in volo il job
+    cron NON parte — nessun prompt costruito, nessun turno, nessun avanzamento.
+
+    Senza la guardia il secondo run partirebbe dallo stesso cursore del primo
+    e scriverebbe sugli stessi file basandosi sul contenuto pre-edit: tutte le
+    edit fallirebbero e un intero turno LLM andrebbe sprecato.
+    """
+    from jenny.runtime.dream_lock import (
+        release_dream_lock,
+        try_acquire_dream_lock,
+    )
+
+    assert await try_acquire_dream_lock() is True
+    try:
+        memory, dispatcher = _dispatch(tmp_path, FileStates(), "completed")
+
+        await dispatcher.dispatch(_DREAM_JOB)
+
+        assert memory.prompt_builds == 0
+        assert memory.cursor is None
+    finally:
+        release_dream_lock()
+
+
+async def test_dream_cron_runs_when_lock_is_free(tmp_path: Path) -> None:
+    """Lock libero: il job cron procede normalmente (il prompt viene costruito)."""
+    from jenny.runtime.dream_lock import release_dream_lock, try_acquire_dream_lock
+
+    # Lock sicuramente libero (i test precedenti rilasciano sempre):
+    # verifichiamo solo che la guardia non blocchi il caso felice.
+    assert await try_acquire_dream_lock() is True
+    release_dream_lock()
+
+    file_states = FileStates()
+    file_states.record_write_attempt()
+    file_states.record_write(tmp_path / "written.md")
+    memory, dispatcher = _dispatch(tmp_path, file_states, "completed")
+
+    await dispatcher.dispatch(_DREAM_JOB)
+
+    assert memory.prompt_builds == 1
+    assert memory.cursor == 42

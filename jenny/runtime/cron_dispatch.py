@@ -273,14 +273,33 @@ class CronDispatcher:
     async def _run_dream(self, agent: "CronCapableAgent") -> str | None:
         # Dream is an internal job — run directly, not through the agent loop.
         from jenny.agent.memory import MemoryStore
+        from jenny.runtime.dream_lock import (
+            release_dream_lock,
+            try_acquire_dream_lock,
+        )
 
         dream_session_key = MemoryStore.dream_session_key
         prune_dream_sessions = MemoryStore.prune_dream_sessions
 
         store = agent.context.memory
         resp = None
+        # Guardia anti-concorrenza: se un run Dream (es. il ``/dream`` manuale
+        # dell'utente) è già in volo, questo job non parte. Due run concorrenti
+        # partirebbero dallo stesso cursore e scriverebbero sugli stessi file
+        # di memoria; quello che arriva secondo fallirebbe su tutte le edit
+        # (contenuto basato sulla versione pre-edit) bruciando un intero turno
+        # LLM. Il wakelock cron non viene tenuto: lo skip è immediato.
+        if not await try_acquire_dream_lock():
+            logger.info(
+                "Dream cron job skipped: another Dream run is already in progress"
+            )
+            return None
         try:
-            result = store.build_dream_prompt()
+            # Lettura di history.jsonl (potenzialmente grande) FUORI dal loop:
+            # ``build_dream_prompt`` legge e parsifica l'intero file in modo
+            # sincrono, e farlo qui congelerebbe WebSocket/HTTP — e con loro
+            # l'input utente — per tutta la durata della lettura.
+            result = await asyncio.to_thread(store.build_dream_prompt)
             if result is None:
                 logger.info("Dream: nothing to process")
                 return None
@@ -325,6 +344,7 @@ class CronDispatcher:
         except Exception:
             logger.exception("Dream cron job failed")
         finally:
+            release_dream_lock()
             from jenny.agent.token_usage import record_response_token_usage
 
             record_response_token_usage(

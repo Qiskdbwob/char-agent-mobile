@@ -261,10 +261,33 @@ async def cmd_model(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+_DREAM_BUSY_MESSAGE = (
+    "Dream is already running (scheduled consolidation); try again in a few minutes."
+)
+
+
 async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
     """Manually trigger a Dream consolidation run."""
+    from jenny.runtime.dream_lock import (
+        dream_lock_locked,
+        release_dream_lock,
+        try_acquire_dream_lock,
+    )
+
     loop = ctx.loop
     msg = ctx.msg
+
+    # Guardia sincrona: se il cron Dream è in volo, rispondiamo subito invece
+    # di far partire un secondo run che colliderebbe (stesso cursore, stessi
+    # file) e brucerebbe un intero passaggio LLM. Il task in background ripete
+    # la guardia con ``try_acquire_dream_lock`` per chiudere la finestra di
+    # race fra questo check e l'effettiva acquisizione.
+    if dream_lock_locked():
+        return OutboundMessage(
+            channel=msg.channel, chat_id=msg.chat_id,
+            content=_DREAM_BUSY_MESSAGE,
+            metadata={"render_as": "text"},
+        )
 
     async def _run_dream():
         async def _silent(*_args, **_kwargs):
@@ -279,8 +302,23 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
         content = ""
         resp = None
         t0 = time.monotonic()
+        acquired = False
         try:
-            result = store.build_dream_prompt()
+            if not await try_acquire_dream_lock():
+                await loop.bus.publish_outbound(OutboundMessage(
+                    channel=msg.channel, chat_id=msg.chat_id,
+                    content=_DREAM_BUSY_MESSAGE,
+                    metadata={"render_as": "text"},
+                ))
+                return
+            acquired = True
+            # Lettura di history.jsonl (potenzialmente grande) FUORI dal loop:
+            # ``build_dream_prompt`` legge e parsifica l'intero file in modo
+            # sincrono, e farlo qui congelerebbe WebSocket/HTTP — e con loro
+            # l'input utente — per tutta la durata della lettura. Rileggere il
+            # prompt DENTRO il lock copre anche il caso "un altro run ha già
+            # consolidato": ``build_dream_prompt`` ritorna ``None``.
+            result = await asyncio.to_thread(store.build_dream_prompt)
             if result is None:
                 await loop.bus.publish_outbound(OutboundMessage(
                     channel=msg.channel, chat_id=msg.chat_id,
@@ -319,6 +357,8 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
             elapsed = time.monotonic() - t0
             content = f"Dream failed after {elapsed:.1f}s: {e}"
         finally:
+            if acquired:
+                release_dream_lock()
             from jenny.agent.token_usage import record_response_token_usage
 
             record_response_token_usage(

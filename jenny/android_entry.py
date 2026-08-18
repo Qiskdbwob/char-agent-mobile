@@ -164,6 +164,7 @@ def run_gateway(
             from jenny.agent.tools.ssh_transport import reset_ssh_backend
             from jenny.config.store import reset_config_store_state
             from jenny.mcp.manager import reset_mcp_state
+            from jenny.runtime.dream_lock import reset_dream_state
             from jenny.runtime.location import reset_location_state
             from jenny.runtime.notifier import reset_notifier_state
             from jenny.runtime.power import reset_power_state
@@ -181,6 +182,10 @@ def run_gateway(
             reset_mcp_state()
             reset_mcp_settings_state()
             reset_installed_apps_state()
+            # Il lock Dream serializza i run di consolidamento (cron + manuale):
+            # se il loop muore con un run in volo, ``locked()`` risponderebbe
+            # "busy" per sempre a ogni ``/dream`` e a ogni job cron successivo.
+            reset_dream_state()
             reset_notifier_state()
             reset_location_state()
             # L'updater tiene una fase *sticky* e un ``UpdateBridge`` in cache:
