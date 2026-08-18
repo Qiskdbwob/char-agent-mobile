@@ -246,8 +246,25 @@ class AgenticSearchBridge(context: Context) {
         }
     }
 
+    /**
+     * Guardia di regressione: ogni metodo/proprietà della WebView deve girare
+     * sul thread che possiede il suo Looper (il main). Se un futuro refactoring
+     * chiamasse la WebView da un thread senza Looper, qui si fallisce con un
+     * messaggio chiaro — e col nome del thread colpevole — invece del
+     * Throwable criptico di ``WebView.checkThread``.
+     */
+    private fun assertMainThread(what: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            throw IllegalStateException(
+                "WebView $what must run on the main Looper thread, but was called on " +
+                    Thread.currentThread().name
+            )
+        }
+    }
+
     /** Crea la WebView nascosta; va chiamata SOLO sul main thread. */
     private fun createWebView() {
+        assertMainThread("creation")
         // Remote debugging (chrome://inspect) SOLO su build debuggable. Il
         // flag non è condizionato da `android:debuggable` — va esplicito — e su
         // una build di release esporrebbe il DOM di TUTTI i WebView del
@@ -638,7 +655,44 @@ class AgenticSearchBridge(context: Context) {
     private fun errorJson(message: String): String =
         JSONObject().apply { put("error", message) }.toString()
 
-    private fun currentUrl(): String = webView?.url ?: ""
+    /**
+     * URL corrente della WebView, letto sul main thread.
+     *
+     * ``wv.url`` è ``WebView.getUrl()``, che esegue ``checkThread``: chiamarlo
+     * dal thread Python (Chaquopy, senza Looper) solleva il Throwable che ha
+     * rotto tutti i tool web a 0.7.4 ("A WebView method was called on thread
+     * 'Thread-7'. All WebView methods must be called on the same thread.").
+     * Ogni lettura di proprietà della WebView deve passare dal main looper,
+     * esattamente come le chiamate in scrittura già postate su `handler`.
+     */
+    private fun currentUrl(): String {
+        val wv = webView ?: return ""
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return try {
+                wv.url ?: ""
+            } catch (t: Throwable) {
+                ""
+            }
+        }
+        val latch = CountDownLatch(1)
+        val ref = AtomicReference<String?>()
+        handler.post {
+            try {
+                ref.set(wv.url)
+            } catch (t: Throwable) {
+                ref.set(null)
+            } finally {
+                latch.countDown()
+            }
+        }
+        val completed = try {
+            latch.await(5, TimeUnit.SECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        return if (completed) ref.get() ?: "" else ""
+    }
 
     /**
      * Carica [url], attende la fine del caricamento e restituisce
@@ -681,7 +735,7 @@ class AgenticSearchBridge(context: Context) {
         }
         return JSONObject()
             .put("ok", true)
-            .put("url", wv.url ?: url)
+            .put("url", currentUrl().ifEmpty { url })
             .put("title", title)
     }
 
