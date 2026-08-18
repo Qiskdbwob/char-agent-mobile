@@ -41,7 +41,7 @@ The launcher delegates the back button entirely to the app itself, with this pri
 
 ## The identity row and connection status
 
-Above the chat there's an identity row, "✿ Jenny", with a small status dot next to it. This row is **not a fixed header** — it's the first item in the scrollable message list, so once you scroll up into your conversation history it scrolls away with everything else.
+Above the chat there's an identity row, "✿ Jenny", with a small status dot next to it. It's a **sticky chip**: as you scroll up into your conversation history it stays pinned at the top of the chat area, so the status dot and Session Info stay reachable no matter how deep in the thread you are. On its right the chip carries a **"+" button** that starts a new chat — it sends `/new` and asks for a second tap to confirm (see [Slash commands](slash-commands.md)). Typing `/` in the message box opens the **command palette** with the slash commands that have no dedicated button or tab; see [Slash commands](slash-commands.md) for which ones appear there and why.
 
 The dot reflects only the state of the WebSocket connection between the WebUI (running in the WebView) and the local gateway (running inside the same app) — it says nothing about your phone's internet connection:
 
@@ -59,7 +59,7 @@ Tapping anywhere on the identity row opens the **Session Info** popover, covered
 
 Tapping the "✿ Jenny" row opens a small popover titled **"Session Info"**. Close it with the X in its corner, by tapping anywhere outside it, or with the **Esc** key (handy if you're on a device with a physical keyboard).
 
-Everything in the popover is a **snapshot taken the moment it opens** — with one exception, the Status timer, none of the rows update live while it's open. If something changes while the popover is open (a turn finishes, the model is switched), close it and reopen it to see the new values.
+The popover is mostly a **snapshot taken the moment it opens** — with two exceptions, the Status timer and the Model row, nothing updates live while it's open. If something changes while the popover is open (a turn finishes, the context fills up), close it and reopen it to see the new values; the Model row updates itself when the model is switched, and the Status timer ticks.
 
 Row by row:
 
@@ -67,15 +67,19 @@ Row by row:
 |---|---|---|
 | **Session** | always `default` | Jenny has a single, unified conversation — there's no session picker or multi-session support here. This value is a fixed string in the UI, not something read from the backend. |
 | **Channel** | always `websocket` | Also fixed. It stays `websocket` even for turns that came in from Telegram, since the whole conversation is one unified thread — see [Telegram bridge](telegram.md). |
-| **Model** / **Preset** | see below | Currently unreliable — see the warning below. |
+| **Model** / **Preset** | provider / model | The provider and model actually in use, read from the gateway at open and kept in sync when the model is switched mid-session. |
+| **Context** | `est / window · pct` | A usage bar (green → amber → red as the window fills) plus the message count, computed from the live agent loop. Only present once the backend has an estimate; see below. |
 | **Project** | an absolute path | The workspace folder the agent reads and writes files in (Jenny's private storage on the device, not shared/general phone storage). |
 | **Access** | a badge with a lock icon | Whether the agent's file tools are confined to that workspace folder or can reach outside it — see below. |
 | **Status** | `Running` or `Idle` | Whether a turn is currently being processed, with a live timer if so — see below. |
 
-### Model / Preset: currently broken, check Settings instead
+### Model / Preset
 
-<!-- TODO: verify on-device (bug tracked as task_7c871f0a) -->
-As of this writing, the **Model** row does not reliably show the model actually in use. A backend/frontend field mismatch means it typically reads as `—` when you haven't switched models at all during the current app session, and something like `Unknown / —` after you do switch. A fix is in progress, but until it lands, don't trust this row — check **Settings → Model** instead to see which provider and model are actually configured. The **Preset** row, when it does work, is meant to only appear if a model preset is active.
+The **Model** row shows the provider and model actually in use, e.g. `OpenAI / gpt-4o-mini`. It's seeded from the gateway when the app opens and updates live when the model is switched mid-session (via Settings → Model or `/model`), so it does not go stale after a switch. The **Preset** row only appears when a model preset is active.
+
+### Context: how full the model's window is
+
+If the backend can estimate the current session size (it can once the agent loop is up), the popover shows a **Context** section: a bar with the estimated tokens against the model's context window, plus the message count. The bar goes **green** below 60% of the window, **amber** from 60–85%, and **red** above 85% — red is a hint that the next long turn may hit the context limit and be compacted. It's a snapshot taken when the popover opens, like the rest; close and reopen to refresh it.
 
 ### Access: what "Restricted" vs "Full access" means
 
@@ -107,7 +111,7 @@ It is deliberately not a history view: only work from the current turn is ever s
 
 ## Where to go next
 
-- [Chat basics](chat.md) — sending messages, reading a response, the Subagents panel, `/stop`.
-- [Slash commands](slash-commands.md) — the full command list.
-- [Settings](../reference/settings.md) — the reliable place to check which model/provider is active.
+- [Chat basics](chat.md) — sending messages, reading a response, the Subagents panel, the Stop button, the new-chat chip.
+- [Slash commands](slash-commands.md) — the full command list and the "/" command palette.
+- [Settings](../reference/settings.md) — changing the model/provider, and the Scheduled tasks viewer.
 - [Security model](../internals/security-model.md) — what "Restricted" access actually enforces.

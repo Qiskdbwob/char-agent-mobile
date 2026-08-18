@@ -12,7 +12,7 @@ Type in the box at the bottom (placeholder "Ask something…") and either:
 
 If you have a hardware keyboard (for example on a Unihertz Titan-style device), you don't have to tap the input first: typing any single printable character while the chat tab is active moves focus into the message box automatically ("type-ahead focus"). This does not trigger on Enter, Escape, arrow keys, spacebar, key combinations with a modifier held down, or while another input/textarea/select/dialog already has focus.
 
-At the top of the chat there is an identity row, "✿ Jenny" with a small status dot next to it — this scrolls away with the rest of the conversation, it is not a fixed header. The dot reflects only the WebSocket link between the WebUI and the local gateway inside the app, not your internet connection in general:
+At the top of the chat there is an identity row, "✿ Jenny" with a small status dot next to it. It's a **sticky chip**: as you scroll up into older messages it stays pinned at the top of the chat area, so the status dot and Session Info stay reachable even deep in the conversation. The chip also carries a **"+" button** on its right that starts a new chat (sends `/new` — see [Slash commands](slash-commands.md)); it needs a second tap to confirm, and disarms itself after a few seconds if you don't confirm. The dot reflects only the WebSocket link between the WebUI and the local gateway inside the app, not your internet connection in general:
 
 | Dot | Label | Meaning |
 |---|---|---|
@@ -24,9 +24,9 @@ Reconnection is automatic and unlimited: the app retries with a growing delay st
 
 Tapping the identity row opens a "Session Info" popover with details such as the model in use, the workspace path, and whether the agent is currently running; see [Tour of the WebUI](webui-tour.md) for what each line means.
 
-### There is no stop button
+### Stopping a running turn
 
-Jenny's chat has no visible stop/cancel control. To interrupt a turn that is in progress, send **`/stop`** as a chat message. `/stop` is processed with priority even while the agent is mid-turn — it doesn't wait in line behind whatever the model is doing — and it always ends the turn cleanly (you'll see something like "Stopped 1 task(s)." or "No active task to stop."). See [Slash commands](slash-commands.md) for the rest of the command list.
+While a turn is streaming, the send button is replaced by a **Stop** button (a filled square). Tapping it interrupts the turn immediately — it sends `/stop`, which is processed with priority even while the agent is mid-turn, so it doesn't wait in line behind whatever the model is doing — and it always ends the turn cleanly (you'll see something like "Stopped 1 task(s)." or "No active task to stop."). The Stop button only appears while something is actually running; there is nothing to press when the agent is idle. `/stop` typed as a message works the same way and is also the only way to interrupt a turn from Telegram. See [Slash commands](slash-commands.md) for the rest of the command list.
 
 ## Anatomy of a response
 

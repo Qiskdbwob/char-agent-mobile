@@ -4,7 +4,9 @@ Typing a message that starts with `/` in the chat input can trigger a built-in c
 
 ## How commands work
 
-Commands are matched on the whole message (case-insensitive), either as an exact word (`/new`) or as a prefix followed by an argument (`/model fast`). If what you type doesn't match any known command, it is **not rejected** — it's forwarded to the agent as an ordinary chat message, exactly as if it had no leading slash. There's no command palette or autocomplete in the WebUI: you type commands by hand.
+Commands are matched on the whole message (case-insensitive), either as an exact word (`/new`) or as a prefix followed by an argument (`/model fast`). If what you type doesn't match any known command, it is **not rejected** — it's forwarded to the agent as an ordinary chat message, exactly as if it had no leading slash.
+
+The WebUI has a **command palette**: typing `/` in the message box opens a small list of the slash commands that have no dedicated button or tab of their own (`/help`, `/status`, `/goal`, `/dream`, `/atlas`). Keep typing to filter by prefix; navigate with the arrow keys and confirm with Enter, or just tap an entry. `/stop`, `/new`, `/model`, `/skill` and `/history` are deliberately left out of the palette because they already have their own controls — the Stop button, the new-chat button, and the Model/Skills/transcript surfaces. Commands with an argument (`/goal`) insert their prefix into the composer for you to finish; the rest send immediately.
 
 Two commands — `/stop` and `/status` — are handled on a "priority" fast path that runs even while a turn is actively streaming or a tool is executing. The rest wait for the current dispatch to be free, which in practice is rarely noticeable.
 
@@ -39,7 +41,7 @@ New session started.
 
 ### `/stop` — cancel the active turn
 
-There is no stop button in the WebUI; this command is the only way to interrupt a turn that's in progress, and it works specifically because it's on the priority fast path (it's processed even mid-turn, before the normal dispatch lock). Response:
+The chat shows a **Stop** button (a filled square next to the send button) while a turn is streaming; tapping it sends `/stop` for you. This command is also the way to interrupt a turn from Telegram, and it works specifically because it's on the priority fast path (it's processed even mid-turn, before the normal dispatch lock). Response:
 
 ```text
 Stopped N task(s).

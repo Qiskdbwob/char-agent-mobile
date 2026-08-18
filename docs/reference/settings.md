@@ -183,8 +183,13 @@ Three blocks: **Export encrypted backup** (passphrase-protected, includes memory
 | Item | Shows |
 |---|---|
 | Version | The installed app version string. |
+| Scheduled tasks | The cron job list — every scheduled job (user reminders plus system jobs like Dream, Atlas, Heartbeat and update checks), with schedule, mode, next/last run and status. User jobs can be removed (with a confirm step); system jobs are marked "System task — cannot be removed". See below. |
 | Developer mode | Toggle, default **off**. See below. |
 | Token Usage | 7 local usage statistics. See below. |
+
+### Scheduled tasks
+
+Lists the jobs registered with Jenny's scheduler — the same ones the `cron` tool manages from chat. Each row shows the schedule, the mode (one-shot or recurring), when it last ran and when it runs next, and its current status. **Remove task** deletes only user-created jobs after a confirmation prompt; system jobs (Dream, Atlas, Heartbeat, update checks) carry a "System task — cannot be removed" badge and have no remove button — they're managed through config (see [Configuration](configuration.md)) and cannot be deleted from the UI by design. On startup, if the job store was unreadable, a notice explains that jobs were recovered from the last good backup or that the list started empty.
 
 ### Developer mode
 
