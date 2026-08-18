@@ -117,7 +117,9 @@
     "access": "Accesso",
     "status": "Stato",
     "running": "In esecuzione",
-    "idle": "Inattivo"
+    "idle": "Inattivo",
+    "context": "Contesto",
+    "messages": "Messaggi"
   },
   "settings": {
     "save": "Salva",
@@ -413,6 +415,18 @@
       "disabled": "Canale Telegram disattivato",
       "batteryHint": "Per risposte immediate anche a telefono non in carica, esenta Jenny dall'ottimizzazione batteria.",
       "batteryButton": "Esenta dalla batteria"
+    },
+    "cron": {
+      "title": "Attività programmate",
+      "loading": "Caricamento…",
+      "empty": "Nessuna attività programmata.",
+      "loadFailed": "Impossibile caricare le attività programmate.",
+      "protected": "Attività di sistema — non rimovibile",
+      "remove": "Rimuovi attività",
+      "removeConfirm": "Rimuovere questa attività programmata?",
+      "removed": "Attività rimossa.",
+      "notFound": "Attività non trovata.",
+      "removeFailed": "Impossibile rimuovere l'attività."
     }
   },
   "common": {

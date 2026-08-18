@@ -3230,6 +3230,32 @@ export class ChatController {
     const isRunning = !!runStartedAt;
     let statusTimerInterval = null;
 
+    // Stato del contesto (stima token vs finestra + conteggio messaggi),
+    // quando il backend lo fornisce nel thread.
+    const context = sessionManager.context || null;
+    let contextHtml = '';
+    if (context && context.context_window_tokens) {
+      const est = Math.max(Number(context.tokens_estimate) || 0, 0);
+      const win = Number(context.context_window_tokens) || 0;
+      const pct = win > 0 ? Math.min(100, Math.round((est / win) * 100)) : 0;
+      const color = pct >= 85 ? 'var(--error)' : pct >= 60 ? 'var(--warning)' : 'var(--ok)';
+      const fmt = (n) => n >= 1000
+        ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+        : String(n);
+      contextHtml = `
+      <div class="session-info-section session-info-context">
+        <div class="session-info-row">
+          <span class="session-info-label">${i18n.t('session.context')}</span>
+          <span class="session-info-value" style="color:${color}">${fmt(est)} / ${fmt(win)} · ${pct}%</span>
+        </div>
+        <div class="context-bar"><i style="width:${pct}%;background:${color}"></i></div>
+        <div class="session-info-row">
+          <span class="session-info-label">${i18n.t('session.messages')}</span>
+          <span class="session-info-value">${Number(context.message_count) || 0}</span>
+        </div>
+      </div>`;
+    }
+
     popover.innerHTML = `
       <div class="session-info-header">
         <span><i class="ti ti-info-circle"></i> ${i18n.t('session.info')}</span>
@@ -3265,6 +3291,7 @@ export class ChatController {
           <span class="session-info-value"><span class="scope-badge ${accessClass}"><i class="ti ${accessIcon}"></i> ${accessMode}</span></span>
         </div>
       </div>
+      ${contextHtml}
       <div class="session-info-section session-info-status">
         <div class="session-info-row">
           <span class="session-info-label">${i18n.t('session.status')}</span>

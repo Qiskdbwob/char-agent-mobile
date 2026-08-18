@@ -175,6 +175,8 @@ class GatewayHTTPHandler:
         disabled_skills: set[str] | None = None,
         snapshot_service: Any | None = None,
         get_subagent_manager: Callable[[], Any | None] | None = None,
+        get_cron_service: Callable[[], Any | None] | None = None,
+        get_loop_status: Callable[[], Any | None] | None = None,
         log: Any = logger,
         onboarding_event: Any | None = None,
         on_settings_changed: Callable[[], None] | None = None,
@@ -200,6 +202,8 @@ class GatewayHTTPHandler:
         self.skills_workspace_path = skills_workspace_path
         self.disabled_skills = disabled_skills or set()
         self._log = log
+        self._get_cron_service = get_cron_service or (lambda: None)
+        self._get_loop_status = get_loop_status or (lambda: None)
 
         from jenny.webui.settings_routes import WebUISettingsRouter
 
@@ -216,9 +220,18 @@ class GatewayHTTPHandler:
             on_telegram_changed=on_telegram_changed,
         )
 
+        from jenny.webui.cron_routes import CronRoutes
         from jenny.webui.skills_routes import SkillsRoutes
         from jenny.webui.wiki_routes import WikiRoutes
 
+        self.cron_routes = CronRoutes(
+            get_cron_service=self._get_cron_service,
+            check_api_token=self.check_api_secret,
+            json_response=_http_json_response,
+            error_response=_http_error,
+            parse_query=_parse_query,
+            query_first=_query_first,
+        )
         self.skills_routes = SkillsRoutes(
             check_api_token=self.check_api_secret,
             json_response=_http_json_response,
@@ -475,6 +488,22 @@ class GatewayHTTPHandler:
         started_at = websocket_turn_wall_started_at("default")
         if started_at is not None:
             data["run_started_at"] = started_at
+        # Stato del contesto (per la WebUI): stima token vs finestra e conteggio
+        # messaggi. Opzionale e best-effort — l'agente può non esistere ancora
+        # (onboarding) o la stima può fallire; nessuno dei due deve rompere il
+        # thread.
+        loop = self._get_loop_status()
+        if loop is not None:
+            try:
+                session = loop.sessions.get_or_create(core_key)
+                ctx_est, _ = loop.consolidator.estimate_session_prompt_tokens(session)
+                data["context"] = {
+                    "tokens_estimate": max(int(ctx_est), 0),
+                    "context_window_tokens": int(loop.context_window_tokens or 0),
+                    "message_count": len(session.get_history(max_messages=0)),
+                }
+            except Exception:
+                data["context"] = None
         return _http_json_response(data)
 
     def _handle_file_preview(self, request: WsRequest, key: str) -> Response:
@@ -518,6 +547,9 @@ class GatewayHTTPHandler:
     async def _dispatch_misc_routes(
         self, connection: Any, request: WsRequest, got: str
     ) -> Response | None:
+        cron_response = self.cron_routes.dispatch(request, got)
+        if cron_response is not None:
+            return cron_response
         skills_response = self.skills_routes.dispatch(request, got)
         if skills_response is not None:
             return skills_response

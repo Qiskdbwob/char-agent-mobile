@@ -53,6 +53,8 @@ class WebSocketDispatcher:
         on_settings_changed: Callable[[], None] | None = None,
         ui_query: Any | None = None,
         get_subagent_manager: Callable[[], Any | None] | None = None,
+        get_cron_service: Callable[[], Any | None] | None = None,
+        get_loop_status: Callable[[], Any | None] | None = None,
     ):
         self.config = config
         self.bus = bus
@@ -63,6 +65,8 @@ class WebSocketDispatcher:
         self._onboarding_event = onboarding_event
         self._on_settings_changed = on_settings_changed
         self._ui_query = ui_query
+        self._get_cron_service = get_cron_service
+        self._get_loop_status = get_loop_status
         self.channels: dict[str, Any] = {}
         self._dispatch_task: asyncio.Task | None = None
         self._hot_tasks: list[asyncio.Task] = []
@@ -94,6 +98,8 @@ class WebSocketDispatcher:
             runtime_model_name=self._webui_runtime_model_name,
             snapshot_service=self._snapshot_service,
             get_subagent_manager=self._get_subagent_manager,
+            get_cron_service=self._get_cron_service,
+            get_loop_status=self._get_loop_status,
             logger=logger,
             onboarding_event=self._onboarding_event,
             on_settings_changed=self._on_settings_changed,

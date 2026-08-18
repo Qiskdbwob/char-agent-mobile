@@ -1588,7 +1588,10 @@ export class SettingsController {
       ${this._renderRerunOnboarding()}
       <div class="settings-divider"></div>
       <div class="settings-subheading">${i18n.t('settings.tokenUsage')}</div>
-      ${this._renderUsage(d)}`;
+      ${this._renderUsage(d)}
+      <div class="settings-divider"></div>
+      <div class="settings-subheading">${i18n.t('settings.cron.title')}</div>
+      <div id="cron-jobs-list" class="cron-jobs-list">${i18n.t('settings.cron.loading')}</div>`;
   }
 
   /* ── Aggiornamento dell'app ──────────────────────────────────────────
@@ -2125,6 +2128,74 @@ export class SettingsController {
 
   // ── Form Helpers ───────────────────────────────────────────────────
 
+  // ── Cron (job schedulati) ────────────────────────────────────────
+
+  async _loadCronJobs() {
+    const el = this.contentEl?.querySelector('#cron-jobs-list');
+    if (!el) return;
+    const gen = this._gen;
+    try {
+      const data = await api.getCron();
+      if (this._stale(gen)) return;
+      this._renderCronJobs(el, data.jobs || []);
+    } catch (err) {
+      if (this._stale(gen)) return;
+      el.innerHTML = `<div class="settings-empty-state">${i18n.t('settings.cron.loadFailed')}</div>`;
+    }
+  }
+
+  _renderCronJobs(el, jobs) {
+    if (!jobs.length) {
+      el.innerHTML = `<div class="settings-empty-state">${i18n.t('settings.cron.empty')}</div>`;
+      return;
+    }
+    el.innerHTML = jobs.map(j => `
+      <div class="cron-job">
+        <div class="cron-job-main">
+          <span class="cron-job-name">${escapeHtml(j.name)}${j.protected
+            ? ` <i class="ti ti-lock" title="${escapeHtml(i18n.t('settings.cron.protected'))}"></i>`
+            : ''}</span>
+          <span class="cron-job-schedule">${escapeHtml(j.schedule_label)}</span>
+          ${j.message ? `<span class="cron-job-message">${escapeHtml(j.message)}</span>` : ''}
+        </div>
+        <div class="cron-job-side">
+          ${j.last_status
+            ? `<span class="cron-job-status status-${escapeHtml(j.last_status)}">${escapeHtml(j.last_status)}</span>`
+            : ''}
+          ${j.protected ? '' : `
+          <button type="button" class="cron-job-remove" data-id="${escapeHtml(j.id)}"
+            title="${escapeHtml(i18n.t('settings.cron.remove'))}" aria-label="${escapeHtml(i18n.t('settings.cron.remove'))}">
+            <i class="ti ti-trash"></i>
+          </button>`}
+        </div>
+      </div>`).join('');
+    el.querySelectorAll('.cron-job-remove').forEach(btn => {
+      btn.addEventListener('click', () => this._removeCronJob(btn.dataset.id, btn));
+    });
+  }
+
+  async _removeCronJob(jobId, btn) {
+    // conferma esplicita: rimuovere un promemoria programmato è distruttivo.
+    if (!await confirmDialog(i18n.t('settings.cron.removeConfirm'))) return;
+    btn.disabled = true;
+    try {
+      const res = await api.removeCronJob(jobId);
+      if (res.removed) {
+        showToast(i18n.t('settings.cron.removed'));
+        this._loadCronJobs();
+      } else if (res.protected) {
+        showToast(i18n.t('settings.cron.protected'), 'error');
+        btn.disabled = false;
+      } else {
+        showToast(i18n.t('settings.cron.notFound'), 'error');
+        btn.disabled = false;
+      }
+    } catch (err) {
+      btn.disabled = false;
+      showToast(i18n.t('settings.cron.removeFailed'), 'error');
+    }
+  }
+
   _field(label, type, key, value, placeholder = '') {
     return `<div class="settings-field">
       <label class="settings-label">${label}</label>
@@ -2350,6 +2421,9 @@ export class SettingsController {
         });
       });
     });
+
+    // Job cron: si popolano da soli (chiamata a parte, come la diagnostica).
+    this._loadCronJobs();
   }
 
   _wireBtn(id, fn) {

@@ -623,6 +623,84 @@ body {
   position: relative;
 }
 
+.session-info-context { border-top: 1px solid var(--border); }
+.context-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  margin: 6px 12px 4px;
+  overflow: hidden;
+}
+.context-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ── Job cron (Settings → System) ── */
+.cron-jobs-list { display: flex; flex-direction: column; gap: 6px; }
+.cron-job {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.cron-job-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cron-job-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.cron-job-schedule {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+.cron-job-message {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cron-job-side { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.cron-job-status {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--text-muted);
+}
+.cron-job-status.status-ok { background: rgba(52, 211, 153, 0.15); color: rgb(52, 211, 153); }
+.cron-job-status.status-error { background: rgba(239, 68, 68, 0.15); color: rgb(239, 68, 68); }
+.cron-job-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.cron-job-remove:hover { background: rgba(239, 68, 68, 0.12); color: rgb(239, 68, 68); }
+.cron-job-remove:disabled { opacity: .4; }
+
 /* ── Command palette "/": dropdown sopra la barra di input ── */
 .command-palette {
   position: absolute;

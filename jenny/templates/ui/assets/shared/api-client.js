@@ -119,6 +119,20 @@ class ApiClient {
     return res.json();
   }
 
+  /** Job cron schedulati (sistema + utente). */
+  async getCron() {
+    const res = await this._fetch('/api/cron');
+    if (!res.ok) throw new Error(`Cron list failed: ${res.status}`);
+    return res.json();
+  }
+
+  /** Rimuove un job cron d'utente (i job di sistema sono protetti). */
+  async removeCronJob(jobId) {
+    const res = await this._postWithQuery('/api/cron/remove', { job_id: jobId });
+    if (!res.ok) throw new Error(`Cron remove failed: ${res.status}`);
+    return res.json();
+  }
+
   async launchAndroidApp(packageName) {
     const res = await this._fetch(`/api/webui/android-apps/${encodeURIComponent(packageName)}/launch`);
     if (!res.ok) throw new Error(`Launch failed: ${res.status}`);

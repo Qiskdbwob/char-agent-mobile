@@ -231,6 +231,11 @@ class GatewayContainer:
             # Late-binding come ``get_agent`` per il cron: l'agente può essere
             # creato dopo il gateway (onboarding) e riassegnato da set_agent.
             get_subagent_manager=lambda: getattr(self._agent, "subagents", None),
+            get_cron_service=lambda: self.cron,
+            # Per lo stato del contesto nella WebUI (stime token, finestra,
+            # conteggio messaggi): stesso late-binding del resto, l'agente può
+            # nascere dopo il gateway (onboarding).
+            get_loop_status=lambda: self._agent,
         )
 
         if self.channels.enabled:

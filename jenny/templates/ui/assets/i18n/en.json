@@ -117,7 +117,9 @@
     "access": "Access",
     "status": "Status",
     "running": "Running",
-    "idle": "Idle"
+    "idle": "Idle",
+    "context": "Context",
+    "messages": "Messages"
   },
   "settings": {
     "save": "Save",
@@ -413,6 +415,18 @@
       "disabled": "Telegram channel disabled",
       "batteryHint": "For instant replies even when the phone is not charging, exempt Jenny from battery optimization.",
       "batteryButton": "Exempt from battery"
+    },
+    "cron": {
+      "title": "Scheduled tasks",
+      "loading": "Loading…",
+      "empty": "No scheduled tasks.",
+      "loadFailed": "Failed to load scheduled tasks.",
+      "protected": "System task — cannot be removed",
+      "remove": "Remove task",
+      "removeConfirm": "Remove this scheduled task?",
+      "removed": "Task removed.",
+      "notFound": "Task not found.",
+      "removeFailed": "Failed to remove task."
     }
   },
   "common": {

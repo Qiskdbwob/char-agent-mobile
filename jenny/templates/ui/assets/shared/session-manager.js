@@ -29,6 +29,7 @@ export class SessionManager {
     if (data && typeof data === 'object') {
       this.currentScope = data.workspace_scope || null;
       this.runStartedAt = data.run_started_at || null;
+      this.context = data.context || null;
     }
     return data;
   }
