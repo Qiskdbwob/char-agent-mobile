@@ -31,6 +31,9 @@ from jenny.config.schema import TelegramConfig
 from jenny.runtime.power import keep_awake
 from jenny.webui.metadata import WEBUI_TURN_METADATA_KEY
 
+# Intervallo fra sendChatAction (max 1 ogni 5s secondo Telegram Bot API).
+_TYPING_INTERVAL_S = 4.5
+
 # Limite prudente sul testo grezzo: la conversione HTML può allungare il chunk.
 _RAW_CHUNK_LIMIT = 3500
 _POLL_BACKOFF_MAX_S = 60.0
@@ -115,7 +118,7 @@ class TelegramChannel:
 
     name = "telegram"
     display_name = "Telegram"
-    send_progress = False
+    send_progress = True
     send_tool_hints = False
     show_reasoning = False
     # I retry sono gestiti per-chunk internamente: un retry esterno del
@@ -143,6 +146,14 @@ class TelegramChannel:
         # Tentativi di pairing per chat (in-memory: si azzera al reload del
         # canale, che rigenera comunque il codice nei percorsi che contano).
         self._pair_attempts: dict[str, int] = {}
+        # Typing indicator: task periodico che invia sendChatAction("typing")
+        # finché un turno è in corso.  Il token change di ``_typing_token``
+        # fa da cancellazione implicita: un turno nuovo con un token diverso
+        # sostituisce il task precedente, e l'ultimo stop avviene quando
+        # arriva il messaggio finale dello stesso turno.
+        self._typing_task: asyncio.Task | None = None
+        self._typing_token: object = None
+        self._last_turn_id: str | None = None
 
     def _t(self, key: str) -> str:
         return _BOT_STRINGS[self._language][key]
@@ -164,6 +175,7 @@ class TelegramChannel:
             await self._poll_task
 
     async def stop(self) -> None:
+        self._stop_typing()
         if self._poll_task is not None:
             self._poll_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -403,9 +415,21 @@ class TelegramChannel:
         if not self._paired_chat_id:
             logger.warning("Telegram: dropping outbound, no paired chat")
             return []
+        # Typing indicator: avvio automatico all'arrivo del primo messaggio
+        # di un nuovo turno; stop al messaggio finale di quello stesso turno.
+        turn_id = meta.get(WEBUI_TURN_METADATA_KEY)
+        is_new_turn = (
+            isinstance(turn_id, str)
+            and turn_id
+            and turn_id != self._last_turn_id
+        )
+        if is_new_turn:
+            self._last_turn_id = turn_id
+            self._start_typing()
         content = msg.content or ""
         media = [m for m in (msg.media or []) if isinstance(m, str) and m.strip()]
         if not content.strip() and not media:
+            self._stop_typing()
             return []
 
         chat_id = str(self._paired_chat_id)
@@ -417,6 +441,7 @@ class TelegramChannel:
         # saltato, senza abbattere la consegna del resto.
         for item in media:
             await self._send_media_item(chat_id, item)
+        self._stop_typing()
         return []
 
     async def _send_media_item(self, chat_id: str, path: str) -> None:
@@ -496,6 +521,46 @@ class TelegramChannel:
             await self.api.send_message(chat_id, text)
         except Exception:
             logger.exception("Telegram: service reply failed")
+
+    # ------------------------------------------------------------------ #
+    # Typing indicator ("Jenny sta scrivendo...")                       #
+    # ------------------------------------------------------------------ #
+
+    def _start_typing(self) -> None:
+        """Avvia l'invio periodico di ``sendChatAction("typing")``.
+
+        Ogni chiamata a ``_start_typing`` con un turno nuovo sostituisce il
+        task precedente tramite il token di cancellazione: il loop vecchio
+        si accorge che il suo token è cambiato e si ferma.
+        """
+        if not self._paired_chat_id:
+            return
+        self._stop_typing()  # cancella un eventuale task di un turno precedente
+        chat_id = str(self._paired_chat_id)
+        token = object()
+        self._typing_token = token
+
+        async def _typing_loop() -> None:
+            try:
+                while self._typing_token is token:
+                    await self.api.send_chat_action(chat_id, "typing")
+                    await asyncio.sleep(_TYPING_INTERVAL_S)
+            except asyncio.CancelledError:
+                pass
+
+        self._typing_task = asyncio.create_task(_typing_loop())
+
+    def _stop_typing(self) -> None:
+        """Ferma il task periodico di typing indicator.
+
+        Cambia il token di cancellazione e cancella il task.  Il task
+        corrente si accorge che il token è diverso e si ferma da solo,
+        quindi non c'è bisogno di ``await`` (il task è fire-and-forget).
+        """
+        self._typing_token = object()
+        if self._typing_task is not None and not self._typing_task.done():
+            self._typing_task.cancel()
+        self._typing_task = None
 
     # ------------------------------------------------------------------ #
     # No-op per il contratto dispatcher (nessuno streaming su Telegram)  #

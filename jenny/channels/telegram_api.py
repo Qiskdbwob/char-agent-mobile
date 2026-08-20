@@ -161,6 +161,25 @@ class TelegramAPI:
                 payload["parse_mode"] = parse_mode
         return await self._call(method, payload)
 
+    async def send_chat_action(
+        self,
+        chat_id: str,
+        action: str,
+    ) -> bool:
+        """Invia un'azione di chat (es. ``typing``); ritorna True a successo.
+
+        Usata per mostrare l'indicatore "scrivendo..." durante un turno.
+        Telegram impone max 1 ogni 5 secondi per chat.
+        """
+        try:
+            await self._call(
+                "sendChatAction",
+                {"chat_id": chat_id, "action": action},
+            )
+            return True
+        except TelegramAPIError:
+            return False
+
     async def set_my_commands(self, commands: list[dict[str, str]]) -> Any:
         """Registra il menu comandi del bot (chiamata best-effort lato caller)."""
         return await self._call("setMyCommands", {"commands": commands})
