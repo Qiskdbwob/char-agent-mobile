@@ -12,8 +12,7 @@ from typing import Any
 
 from loguru import logger
 
-from jenny.agent.tools.base import Tool, tool_parameters
-from jenny.agent.tools.file_state import FileStates
+from jenny.agent.tools.base import Tool
 from jenny.agent.tools.schema import IntegerSchema, StringSchema, tool_parameters_schema
 from jenny.security.workspace_access import current_tool_workspace
 

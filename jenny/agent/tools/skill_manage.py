@@ -6,13 +6,12 @@ Provides a structured interface for skill lifecycle management.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from jenny.agent.tools.base import Tool, tool_parameters
+from jenny.agent.tools.base import Tool
 from jenny.agent.tools.file_state import FileStates, current_file_states
 from jenny.agent.tools.schema import StringSchema, tool_parameters_schema
 from jenny.security.workspace_access import current_tool_workspace
