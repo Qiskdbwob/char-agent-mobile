@@ -140,6 +140,11 @@ class GatewayContainer:
         if self.snapshot:
             await self.snapshot.snapshot_now("pre_dream")
 
+    async def _snapshot_before_atlas(self) -> None:
+        """Checkpoint del workspace prima che Atlas riscriva WIKI.md."""
+        if self.snapshot:
+            await self.snapshot.snapshot_now("pre_atlas")
+
     # -- costruzione del grafo ----------------------------------------------
 
     def build(self) -> None:
@@ -264,6 +269,7 @@ class GatewayContainer:
             cron=self.cron,
             heartbeat_cfg=hb_cfg,
             snapshot_before_dream=self._snapshot_before_dream,
+            snapshot_before_atlas=self._snapshot_before_atlas,
         ).dispatch
 
         # Register Dream system job (idempotent on restart).

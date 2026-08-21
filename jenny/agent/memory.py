@@ -51,6 +51,7 @@ class MemoryStore:
         self.user_file = workspace / "USER.md"
         self._cursor_file = self.memory_dir / ".cursor"
         self._dream_cursor_file = self.memory_dir / ".dream_cursor"
+        self._turn_counter_file = self.memory_dir / ".turn_counter"
         self._corruption_logged = False  # rate-limit non-int cursor warning
         self._malformed_entry_logged = False  # rate-limit bad history shape warning
         self._oversize_logged = False  # rate-limit oversized-entry warning
@@ -349,6 +350,26 @@ class MemoryStore:
         # legge come 0 e Dream ricomincia da capo su tutta la storia.
         atomic_write(self._dream_cursor_file, str(cursor))
 
+    # -- turn counter (event-based Dream trigger) ----------------------------
+
+    def get_turn_counter(self) -> int:
+        """Ritorna il conteggio dei turni completati dall'ultimo Dream."""
+        if self._turn_counter_file.exists():
+            with suppress(ValueError, OSError):
+                return int(self._turn_counter_file.read_text(encoding="utf-8").strip())
+        return 0
+
+    def increment_turn_counter(self) -> int:
+        """Incrementa il contatore e ritorna il nuovo valore."""
+        current = self.get_turn_counter()
+        new_val = current + 1
+        atomic_write(self._turn_counter_file, str(new_val))
+        return new_val
+
+    def reset_turn_counter(self) -> None:
+        """Resetta il contatore a zero (chiamato dopo un Dream completato)."""
+        atomic_write(self._turn_counter_file, "0")
+
     def build_dream_prompt(self, *, max_entries: int = 20) -> tuple[str, int] | None:
         """Build the Dream prompt with unprocessed history context.
 
@@ -428,6 +449,13 @@ class MemoryStore:
         tools.register(WriteFileTool(
             workspace=workspace,
             allowed_dir=skills_dir,
+            file_states=file_states,
+        ))
+        # Skill management tool: permette a Dream di creare/aggiornare/cancellare
+        # skill in base a pattern osservati nella history.
+        from jenny.agent.tools.skill_manage import SkillManageTool
+        tools.register(SkillManageTool(
+            workspace=workspace,
             file_states=file_states,
         ))
         # Esposto per ``dream_should_advance_cursor``: stesso oggetto usato da

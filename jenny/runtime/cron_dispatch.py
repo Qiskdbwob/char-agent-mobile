@@ -205,12 +205,14 @@ class CronDispatcher:
         cron: "CronService",
         heartbeat_cfg: Any,
         snapshot_before_dream: Callable[[], Awaitable[None]] | None = None,
+        snapshot_before_atlas: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._get_agent = get_agent
         self._config = config
         self._cron = cron
         self._hb_cfg = heartbeat_cfg
         self._snapshot_before_dream = snapshot_before_dream
+        self._snapshot_before_atlas = snapshot_before_atlas
         # Un task delegato con ``spawn`` non ha un esito dentro il turno che lo
         # delega, e il turno che quell'esito ce l'ha — l'annuncio del subagent —
         # arriva dal bus e non passa mai di qui. Il servizio cron è l'aggancio
@@ -266,7 +268,9 @@ class CronDispatcher:
         from jenny.agent.atlas import AtlasStore, run_atlas
 
         store = AtlasStore.from_config(self._config.workspace_path, self._config)
-        outcome = await run_atlas(agent, store=store)
+        outcome = await run_atlas(
+            agent, store=store, snapshot_callback=self._snapshot_before_atlas,
+        )
         logger.debug("Atlas cron job: {}", outcome.status)
         return None
 

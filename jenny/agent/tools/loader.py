@@ -69,6 +69,7 @@ _HARDCODED_TOOL_MODULES = [
     "cron",
     "self",
     "search",
+    "search_history",
     "message",
     "apply_patch",
     "exec_session",
@@ -77,6 +78,7 @@ _HARDCODED_TOOL_MODULES = [
     "ui_view",
     "ssh",
     "app_update",
+    "skill_manage",
 ]
 
 

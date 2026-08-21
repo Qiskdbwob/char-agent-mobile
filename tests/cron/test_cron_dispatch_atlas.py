@@ -50,12 +50,13 @@ def _dispatcher(agent) -> CronDispatcher:
 async def test_atlas_job_reaches_run_atlas(tmp_path, monkeypatch):
     seen: dict[str, object] = {}
 
-    async def _fake_run_atlas(agent, *, store=None, force=False):
+    async def _fake_run_atlas(agent, *, store=None, force=False, snapshot_callback=None):
         from jenny.agent.atlas import AtlasOutcome
 
         seen["agent"] = agent
         seen["store"] = store
         seen["force"] = force
+        seen["snapshot_callback"] = snapshot_callback
         return AtlasOutcome(status="written", elapsed=0.1)
 
     monkeypatch.setattr("jenny.agent.atlas.run_atlas", _fake_run_atlas)
@@ -73,7 +74,7 @@ async def test_atlas_job_reaches_run_atlas(tmp_path, monkeypatch):
 async def test_atlas_store_is_built_from_the_dispatcher_config(tmp_path, monkeypatch):
     captured: dict[str, object] = {}
 
-    async def _fake_run_atlas(agent, *, store=None, force=False):
+    async def _fake_run_atlas(agent, *, store=None, force=False, snapshot_callback=None):
         from jenny.agent.atlas import AtlasOutcome
 
         captured["wikis_dir"] = store.wikis_dir
@@ -119,7 +120,7 @@ async def test_atlas_runs_inside_the_cron_wakelock(tmp_path, monkeypatch):
         finally:
             events.append(("exit", tag, timeout_s))
 
-    async def _fake_run_atlas(agent, *, store=None, force=False):
+    async def _fake_run_atlas(agent, *, store=None, force=False, snapshot_callback=None):
         from jenny.agent.atlas import AtlasOutcome
 
         # Il lock deve essere già preso mentre il job gira, non dopo.

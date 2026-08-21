@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -341,12 +342,18 @@ async def run_atlas(
     *,
     store: AtlasStore | None = None,
     force: bool = False,
+    snapshot_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> AtlasOutcome:
     """Esegue un run Atlas e restituisce l'esito.
 
     Unico punto di ingresso: lo usano sia il cron (``runtime/cron_dispatch.py``)
     sia lo slash command (``command/builtin.py``). *force* salta il controllo
     del fingerprint ma non quello sull'esistenza delle wiki.
+
+    ``snapshot_callback``, quando fornito, viene invocato *prima* che il modello
+    modifichi ``WIKI.md``. Il pattern è lo stesso di Dream: uno snapshot
+    pre-scrittura rende ogni modifica reversibile. Fail-open: un checkpoint
+    fallito non blocca il run.
     """
     from jenny.agent.memory import MemoryStore
     from jenny.agent.token_usage import record_response_token_usage
@@ -369,6 +376,13 @@ async def run_atlas(
     t0 = time.monotonic()
     resp = None
     tools = store.build_tools()
+    # Checkpoint pre-Atlas: uno snapshot prima rende ogni modifica a WIKI.md
+    # reversibile. Fail-open: un checkpoint fallito non blocca il run.
+    if snapshot_callback is not None:
+        try:
+            await snapshot_callback()
+        except Exception:
+            logger.exception("Pre-atlas snapshot failed")
     try:
         resp = await agent.process_direct(
             store.build_prompt(),

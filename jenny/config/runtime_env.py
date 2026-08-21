@@ -143,3 +143,18 @@ def tool_timeout_s(default: float = 300.0) -> float:
     Env: ``JENNY_TOOL_TIMEOUT_S`` (default 300).
     """
     return _float_env("JENNY_TOOL_TIMEOUT_S", default)
+
+
+def dream_turn_threshold(default: int = 15) -> int:
+    """Soglia di turni per il Dream trigger event-based.
+
+    Quando il numero di turni completati dall'ultimo Dream raggiunge questa
+    soglia, viene pianificato un run Dream event-driven (in aggiunta al
+    trigger wall-clock ogni 2h). Questo è特别 utile per sessioni brevi su
+    Android dove il timer di 2 ore potrebbe non scattare mai.
+
+    ``<= 0`` disabilita il trigger event-based (solo wall-clock).
+
+    Env: ``JENNY_DREAM_TURN_THRESHOLD`` (default 15).
+    """
+    return _int_env("JENNY_DREAM_TURN_THRESHOLD", default)

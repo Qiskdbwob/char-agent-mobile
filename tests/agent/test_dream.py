@@ -139,6 +139,7 @@ class TestDreamTools:
             "edit_file",
             "read_file",
             "write_file",
+            "skill_manage",
         }
 
     @pytest.mark.asyncio

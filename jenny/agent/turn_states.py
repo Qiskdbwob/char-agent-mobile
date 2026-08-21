@@ -9,6 +9,7 @@ Non contiene logica di scheduling/concorrenza: quella resta in ``loop.py``.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import time
 from functools import partial
@@ -280,6 +281,94 @@ class StateHandlersMixin:
         self._clear_runtime_checkpoint(session)
         note_goal_turn(session.metadata)
         self.sessions.save(session)
+        # Event-based Dream trigger: incrementa il contatore e, se necessario,
+        # pianifica un run Dream. Solo per turni non effimeri (cron, heartbeat,
+        # dream non devono incrementare il contatore).
+        if not ephemeral:
+            self._maybe_trigger_event_dream()
+
+    def _maybe_trigger_event_dream(self) -> None:
+        """Incrementa il contatore turni e, se la soglia è raggiunta, pianifica
+        un run Dream event-driven.
+
+        Il trigger è event-based (turn-count) come integrazione al trigger
+        wall-clock (ogni 2h). L'intervallo wall-clock resta il fallback per
+        sessioni molto lunghe. La deduplicazione è garantita da
+        ``dream_lock.try_acquire_dream_lock``: se un run Dream è già in corso,
+        il trigger event-based viene saltato.
+        """
+        from jenny.config.runtime_env import dream_turn_threshold
+        from jenny.runtime.dream_lock import dream_lock_locked
+
+        threshold = dream_turn_threshold()
+        if threshold <= 0:
+            return  # event-based trigger disabilitato
+        current = self.context.memory.increment_turn_counter()
+        if current < threshold:
+            return  # soglia non raggiunta
+        # Soglia raggiunta: pianifica un run Dream se non ce n'è già uno in
+        # corso. Resetta il contatore per il prossimo ciclo.
+        if dream_lock_locked():
+            logger.debug(
+                "Event-based Dream trigger: threshold reached ({}) but a Dream "
+                "run is already in progress; skipping",
+                current,
+            )
+            return
+        logger.info(
+            "Event-based Dream trigger: {} turns since last Dream, "
+            "scheduling consolidation",
+            current,
+        )
+        self.context.memory.reset_turn_counter()
+        self._schedule_background(self._trigger_event_dream())
+
+    async def _trigger_event_dream(self) -> None:
+        """Esegue un Dream run event-driven (chiamato come background task)."""
+        from jenny.runtime.dream_lock import (
+            release_dream_lock,
+            try_acquire_dream_lock,
+        )
+
+        if not await try_acquire_dream_lock():
+            logger.debug("Event-based Dream: another Dream run is already in progress")
+            return
+        try:
+            from jenny.agent.memory import MemoryStore
+
+            store = self.context.memory
+            result = await asyncio.to_thread(store.build_dream_prompt)
+            if result is None:
+                logger.info("Event-based Dream: nothing to process")
+                return
+            prompt, last_cursor = result
+            key = MemoryStore.dream_session_key()
+            dream_tools = store.build_dream_tools()
+            resp = await self.process_direct(
+                prompt,
+                session_key=key,
+                ephemeral=True,
+                tools=dream_tools,
+            )
+            dream_file_states = getattr(dream_tools, "file_states", None)
+            if MemoryStore.dream_should_advance_cursor(resp, dream_file_states):
+                store.set_last_dream_cursor(last_cursor)
+                logger.info("Event-based Dream completed, cursor advanced to {}", last_cursor)
+            elif MemoryStore.dream_run_completed(resp):
+                logger.warning(
+                    "Event-based Dream completed without writing; cursor remains at {}",
+                    store.get_last_dream_cursor(),
+                )
+            else:
+                logger.warning(
+                    "Event-based Dream did not complete; cursor remains at {}",
+                    store.get_last_dream_cursor(),
+                )
+        except Exception:
+            logger.exception("Event-based Dream failed")
+        finally:
+            release_dream_lock()
+            await asyncio.to_thread(store.compact_history)
 
     async def _state_build(self, ctx: TurnContext) -> str:
         if not ctx.ephemeral:

@@ -94,10 +94,14 @@ When removing: prefer deleting individual items over entire sections.
 ## Skill discovery & creation
 Flag [SKILL] only when ALL are true: repeatable workflow appeared 2+ times, involves clear steps (not vague preferences), substantial enough for its own instruction set. Check existing skills to avoid redundancy.
 
-For [SKILL] entries:
-- Create `skills/<name>/SKILL.md`; reference `{{ skill_creator_path }}` for format
+For [SKILL] entries, use the `skill_manage` tool:
+- `skill_manage(action="list")` — check existing skills first
+- `skill_manage(action="create", name="<skill-name>", content="<full SKILL.md>")` — create new skill
+- `skill_manage(action="update", name="<skill-name>", content="<full SKILL.md>")` — update existing skill
 - YAML frontmatter (name, description), under 2000 words: when to use, steps, output format, example
 - Do NOT overwrite existing skills — if overlapping, merge delta into the existing skill
+- After creating a skill, migrate related content from MEMORY.md/USER.md to maintain MECE
+- Reference `{{ skill_creator_path }}` for format guidance
 - Skills are instruction sets with concrete values, commands, and examples. MEMORY.md keeps strategic context and high-level facts only.
 
 ## Editing
