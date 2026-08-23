@@ -161,6 +161,50 @@ class TelegramAPI:
                 payload["parse_mode"] = parse_mode
         return await self._call(method, payload)
 
+    async def edit_message_text(
+        self,
+        message_id: str | int,
+        chat_id: str,
+        text: str,
+        parse_mode: str | None = None,
+    ) -> bool:
+        """Modifica il testo di un messaggio esistente; ritorna True a successo.
+
+        Usata per aggiornare il messaggio di stato durante un turno (streaming
+        indicator). Telegram accetta 1 edit per secondo per chat.
+        """
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        try:
+            await self._call("editMessageText", payload)
+            return True
+        except TelegramAPIError:
+            return False
+
+    async def delete_message(
+        self,
+        message_id: str | int,
+        chat_id: str,
+    ) -> bool:
+        """Cancella un messaggio; ritorna True a successo.
+
+        Usata per rimuovere il messaggio di stato al termine del turno.
+        Il fallimento è non-fatale (il messaggio resta visibile).
+        """
+        try:
+            await self._call(
+                "deleteMessage",
+                {"chat_id": chat_id, "message_id": message_id},
+            )
+            return True
+        except TelegramAPIError:
+            return False
+
     async def send_chat_action(
         self,
         chat_id: str,

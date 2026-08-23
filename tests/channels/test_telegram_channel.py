@@ -28,6 +28,7 @@ class FakeAPI:
         self.fail_html = fail_html
         self.photo_400 = photo_400
         self.closed = False
+        self.deleted: list[tuple[str, str | int]] = []
 
     async def send_message(self, chat_id: str, text: str, *, parse_mode: str | None = None):
         if parse_mode == "HTML" and self.fail_html:
@@ -56,6 +57,14 @@ class FakeAPI:
 
     async def get_updates(self, offset, timeout_s):  # pragma: no cover - non usato qui
         return []
+
+    async def edit_message_text(self, message_id, chat_id, text, parse_mode=None):
+        self.sent.append((chat_id, f"[edit:{message_id}] {text}", parse_mode))
+        return True
+
+    async def delete_message(self, message_id, chat_id):
+        self.deleted.append((chat_id, message_id))
+        return True
 
     async def close(self) -> None:
         self.closed = True
@@ -381,7 +390,7 @@ async def test_turn_end_is_ignored() -> None:
 
 async def test_webui_only_events_are_ignored() -> None:
     ch, api, bus = _channel(paired="42")
-    for key in ("_progress", "_session_updated", "_stream_delta", "_user_echo"):
+    for key in ("_session_updated", "_stream_delta", "_user_echo"):
         await ch.send(
             OutboundMessage(
                 channel="telegram", chat_id="42", content="x", metadata={key: True}
@@ -394,6 +403,52 @@ async def test_unpaired_outbound_dropped() -> None:
     ch, api, bus = _channel()
     await ch.send(OutboundMessage(channel="telegram", chat_id="42", content="ciao"))
     assert api.sent == []
+
+
+async def test_progress_event_updates_status_message() -> None:
+    """I progress events vengono convertiti in messaggi di stato (streaming indicator)."""
+    ch, api, bus = _channel(paired="42")
+    await ch.send(
+        OutboundMessage(
+            channel="telegram", chat_id="42", content="Reading workspace files",
+            metadata={"_progress": True},
+        )
+    )
+    assert len(api.sent) == 1
+    assert "Reading workspace files" in api.sent[0][1]
+    # Un secondo progress viene throttled (intervallo minimo 2s).
+    await ch.send(
+        OutboundMessage(
+            channel="telegram", chat_id="42", content="Executing python_exec",
+            metadata={"_progress": True, "_tool_hint": True},
+        )
+    )
+    # Solo il primo è stato inviato (throttling).
+    assert len(api.sent) == 1
+
+
+async def test_turn_end_clears_status() -> None:
+    """Il turn_end cancella il messaggio di stato."""
+    ch, api, bus = _channel(paired="42")
+    # Simula un progress event che crea lo status message.
+    ch._status_last_update = 0.0  # Reset throttle
+    await ch.send(
+        OutboundMessage(
+            channel="telegram", chat_id="42", content="Thinking...",
+            metadata={"_progress": True},
+        )
+    )
+    assert len(api.sent) == 1
+    assert ch._status_msg_id is not None
+    # Turn end cancella lo status.
+    await ch.send(
+        OutboundMessage(
+            channel="telegram", chat_id="42", content="",
+            metadata={"_turn_end": True, "webui_turn_id": "t1"},
+        )
+    )
+    assert ch._status_msg_id is None
+    assert len(api.deleted) == 1
 
 
 async def test_long_message_chunked_in_order() -> None:

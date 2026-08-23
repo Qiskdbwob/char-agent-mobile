@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -33,6 +34,12 @@ from jenny.webui.metadata import WEBUI_TURN_METADATA_KEY
 
 # Intervallo fra sendChatAction (max 1 ogni 5s secondo Telegram Bot API).
 _TYPING_INTERVAL_S = 4.5
+# Intervallo minimo tra due aggiornamenti del messaggio di stato: protegge
+# dalla rate-limit di Telegram (1 edit/chat/s) e riduce il rumore visivo.
+_STATUS_UPDATE_INTERVAL_S = 2.0
+# Prefissi emoji per i diversi stati del turno
+_STATUS_PREFIX_THINKING = "🧠"
+_STATUS_PREFIX_TOOL = "🔧"
 
 # Limite prudente sul testo grezzo: la conversione HTML può allungare il chunk.
 _RAW_CHUNK_LIMIT = 3500
@@ -154,6 +161,11 @@ class TelegramChannel:
         self._typing_task: asyncio.Task | None = None
         self._typing_token: object = None
         self._last_turn_id: str | None = None
+        # Streaming status indicator: messaggio temporaneo durante il turno
+        # che mostra cosa sta facendo l'agente.  Viene editato via
+        # editMessageText e cancellato quando il turno termina.
+        self._status_msg_id: str | int | None = None
+        self._status_last_update: float = 0.0
 
     def _t(self, key: str) -> str:
         return _BOT_STRINGS[self._language][key]
@@ -176,6 +188,8 @@ class TelegramChannel:
 
     async def stop(self) -> None:
         self._stop_typing()
+        self._status_msg_id = None
+        self._status_last_update = 0.0
         if self._poll_task is not None:
             self._poll_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -407,16 +421,42 @@ class TelegramChannel:
         """Consegna un messaggio finale al chat accoppiato.
 
         Ritorna sempre ``[]``: non esiste fan-out parziale su Telegram.
-        Gli eventi di solo coordinamento WebUI vengono ignorati.
+        Gli eventi di solo coordinamento WebUI vengono ignorati, eccetto i
+        progress events che vengono usati per aggiornare il messaggio di
+        stato durante il turno (streaming indicator).
         """
         meta = msg.metadata or {}
+        chat_id = str(self._paired_chat_id) if self._paired_chat_id else None
+
+        # ── Streaming status indicator ─────────────────────────────────
+        # I progress events vengono intercettati PRIMA del filtro webui-only
+        # e convertiti in aggiornamenti al messaggio di stato temporaneo.
+        if meta.get("_progress") and chat_id:
+            content = (msg.content or "").strip()
+            if content:
+                # Aggiunge un prefisso emoji in base al tipo di evento.
+                if meta.get("_tool_hint"):
+                    display = f"{_STATUS_PREFIX_TOOL} {content}"
+                else:
+                    display = f"{_STATUS_PREFIX_THINKING} {content}"
+                await self._update_status(chat_id, display)
+            return []
+
+        # ── Turn end: pulisci lo status ────────────────────────────────
+        if meta.get("_turn_end"):
+            await self._clear_status()
+            return []
+
+        # ── Filtro eventi webui-only ───────────────────────────────────
         if self._is_webui_only_event(meta):
             return []
         if not self._paired_chat_id:
             logger.warning("Telegram: dropping outbound, no paired chat")
             return []
-        # Typing indicator: avvio automatico all'arrivo del primo messaggio
-        # di un nuovo turno; stop al messaggio finale di quello stesso turno.
+
+        # ── Typing indicator ───────────────────────────────────────────
+        # Avvio automatico all'arrivo del primo messaggio di un nuovo turno;
+        # stop al messaggio finale di quello stesso turno.
         turn_id = meta.get(WEBUI_TURN_METADATA_KEY)
         is_new_turn = (
             isinstance(turn_id, str)
@@ -425,12 +465,20 @@ class TelegramChannel:
         )
         if is_new_turn:
             self._last_turn_id = turn_id
+            # Pulisci eventuale stato residuo di un turno precedente.
+            await self._clear_status()
             self._start_typing()
         content = msg.content or ""
         media = [m for m in (msg.media or []) if isinstance(m, str) and m.strip()]
         if not content.strip() and not media:
+            await self._clear_status()
             self._stop_typing()
             return []
+
+        # ── Pulisci lo stato PRIMA di inviare il messaggio finale ────────
+        # L'utente deve vedere: [status] → [risposta finale].
+        # Il message order di Telegram garantisce l'ordinamento corretto.
+        await self._clear_status()
 
         chat_id = str(self._paired_chat_id)
         if content.strip():
@@ -558,6 +606,63 @@ class TelegramChannel:
         quindi non c'è bisogno di ``await`` (il task è fire-and-forget).
         """
         self._typing_token = object()
+
+    # ------------------------------------------------------------------ #
+    # Streaming status indicator                                         #
+    # ------------------------------------------------------------------ #
+
+    async def _update_status(self, chat_id: str, text: str) -> None:
+        """Aggiorna (o crea) il messaggio di stato durante il turno.
+
+        Il messaggio è temporaneo: viene editato ad ogni progress event e
+        cancellato quando il turno termina.  ``_STATUS_UPDATE_INTERVAL_S``
+        protegge dalla rate-limit di Telegram (1 edit/chat/s).
+        """
+        now = time.monotonic()
+        if now - self._status_last_update < _STATUS_UPDATE_INTERVAL_S:
+            return
+        self._status_last_update = now
+        if not text or not text.strip():
+            return
+        # Tronca a 100 caratteri: Telegram ha un limite a 4096, ma un
+        # messaggio di stato non deve mai essere lungo.
+        display = text.strip()
+        if len(display) > 100:
+            display = display[:97] + "…"
+        try:
+            if self._status_msg_id is not None:
+                ok = await self.api.edit_message_text(
+                    self._status_msg_id, chat_id, display
+                )
+                if not ok:
+                    # Il messaggio è stato cancellato dall'utente o è
+                    # diventato invalido: invia uno nuovo.
+                    self._status_msg_id = None
+            if self._status_msg_id is None:
+                result = await self.api.send_message(chat_id, display)
+                # _call() ritorna il campo "result" della response Telegram,
+                # che contiene message_id.
+                if isinstance(result, dict) and "message_id" in result:
+                    self._status_msg_id = result["message_id"]
+        except Exception:
+            logger.debug("Telegram: status message update failed", exc_info=True)
+
+    async def _clear_status(self) -> None:
+        """Cancella il messaggio di stato al termine del turno.
+
+        Il fallimento è non-fatale: il messaggio resta visibile ma non
+        blocca la consegna del messaggio finale.
+        """
+        if self._status_msg_id is None:
+            return
+        chat_id = str(self._paired_chat_id)
+        msg_id = self._status_msg_id
+        self._status_msg_id = None
+        self._status_last_update = 0.0
+        try:
+            await self.api.delete_message(msg_id, chat_id)
+        except Exception:
+            logger.debug("Telegram: status message delete failed", exc_info=True)
         if self._typing_task is not None and not self._typing_task.done():
             self._typing_task.cancel()
         self._typing_task = None
