@@ -29,6 +29,7 @@ class FakeAPI:
         self.photo_400 = photo_400
         self.closed = False
         self.deleted: list[tuple[str, str | int]] = []
+        self.chat_actions: list[tuple[str, str]] = []
 
     async def send_message(self, chat_id: str, text: str, *, parse_mode: str | None = None):
         if parse_mode == "HTML" and self.fail_html:
@@ -64,6 +65,12 @@ class FakeAPI:
 
     async def delete_message(self, message_id, chat_id):
         self.deleted.append((chat_id, message_id))
+
+    async def send_chat_action(self, chat_id: str, action: str) -> None:
+        # Doppio di TelegramAPI.send_chat_action: registra l'azione
+        # (es. "typing") senza toccare la rete. Usato dall'indicatore
+        # di digitazione avviato su inbound.
+        self.chat_actions.append((chat_id, action))
         return True
 
     async def close(self) -> None:

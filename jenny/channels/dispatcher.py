@@ -257,7 +257,8 @@ class WebSocketDispatcher:
 
                 if msg.metadata.get("_progress"):
                     # Gating per-canale: il canale di destinazione decide se
-                    # ricevere progress/tool-hint (Telegram: mai).
+                    # ricevere progress/tool-hint/reasoning. Telegram li
+                    # accetta e li rende come messaggio di stato edit-in-place.
                     target = self._route_channel(msg)
                     if not self._channel_allows_progress(
                         target, tool_hint=bool(msg.metadata.get("_tool_hint"))

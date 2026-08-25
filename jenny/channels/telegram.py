@@ -34,12 +34,21 @@ from jenny.webui.metadata import WEBUI_TURN_METADATA_KEY
 
 # Intervallo fra sendChatAction (max 1 ogni 5s secondo Telegram Bot API).
 _TYPING_INTERVAL_S = 4.5
+# Durata massima di sicurezza del typing indicator: se per qualunque
+# ragione il messaggio finale (o un _turn_end) non arriva a fermarlo,
+# il loop si auto-termina invece di mostrare "sta scrivendo..." per sempre.
+_TYPING_MAX_DURATION_S = 300.0
 # Intervallo minimo tra due aggiornamenti del messaggio di stato: protegge
 # dalla rate-limit di Telegram (1 edit/chat/s) e riduce il rumore visivo.
 _STATUS_UPDATE_INTERVAL_S = 2.0
 # Prefissi emoji per i diversi stati del turno
 _STATUS_PREFIX_THINKING = "🧠"
 _STATUS_PREFIX_TOOL = "🔧"
+
+# Testo di default del messaggio di stato "thinking": compare subito
+# all'arrivo del messaggio utente, senza attendere lo streaming del
+# reasoning (su Telegram non arriva comunque, canale receive-final-only).
+_STATUS_THINKING_DEFAULT = "Jenny sedang berpikir…"
 
 # Limite prudente sul testo grezzo: la conversione HTML può allungare il chunk.
 _RAW_CHUNK_LIMIT = 3500
@@ -126,8 +135,13 @@ class TelegramChannel:
     name = "telegram"
     display_name = "Telegram"
     send_progress = True
-    send_tool_hints = False
-    show_reasoning = False
+    # Tool-hint e reasoning arrivano come MESSAGGIO DI STATO edit-in-place
+    # (🔧 / 🧠) sul canale Telegram, non come streaming: il canale e'
+    # receive-final-only ma lo status indicator e' un meccanismo a parte
+    # (editMessageText sullo stesso _status_msg_id). Prima erano False e
+    # il dispatcher li scartava -> nessuna animazione di pensiero/tool.
+    send_tool_hints = True
+    show_reasoning = True
     # I retry sono gestiti per-chunk internamente: un retry esterno del
     # dispatcher rispedirebbe anche i chunk già consegnati (duplicati).
     send_max_retries = 1
@@ -268,6 +282,20 @@ class TelegramChannel:
 
         # Turn-id per correlare le righe della vista WebUI (user echo, finale,
         # turn_end) allo stesso turno: stesso ruolo del turn-id dei client WS.
+        # Avvia l'indicatore "sta scrivendo..." non appena parte il turno
+        # dell'utente: Telegram e receive-final-only, quindi send() riceve
+        # solo la risposta finale e non puo accendere il typing prima.
+        # Lo stop avviene in send() alla consegna del messaggio finale.
+        self._start_typing()
+        # Messaggio di stato "thinking" GENERICO: compare subito, senza
+        # attendere lo streaming del reasoning (che su Telegram non arriva).
+        # Se il modello emette reasoning, send() lo sovrascrivera con il
+        # testo reale; se no, resta questo finche' non arriva la risposta.
+        # I comandi (/new, /stop, ...) non sono turni di pensiero: saltati.
+        if not text.startswith("/"):
+            await self._update_status(
+                chat_id, f"{_STATUS_PREFIX_THINKING} {_STATUS_THINKING_DEFAULT}"
+            )
         metadata: dict[str, Any] = {WEBUI_TURN_METADATA_KEY: str(uuid.uuid4())}
         await self.bus.publish_inbound(
             InboundMessage(
@@ -329,6 +357,13 @@ class TelegramChannel:
                 fix = replace(fix, place=label)
         record_telegram_location(chat_id, fix)
 
+        # Stesso avvio del typing indicator di un turno testuale (vedi sopra).
+        self._start_typing()
+        # Messaggio di stato "thinking" generico anche per gli share di
+        # posizione (non sono comandi).
+        await self._update_status(
+            chat_id, f"{_STATUS_PREFIX_THINKING} {_STATUS_THINKING_DEFAULT}"
+        )
         metadata: dict[str, Any] = {WEBUI_TURN_METADATA_KEY: str(uuid.uuid4())}
         await self.bus.publish_inbound(
             InboundMessage(
@@ -589,10 +624,16 @@ class TelegramChannel:
         self._typing_token = token
 
         async def _typing_loop() -> None:
+            start = time.monotonic()
             try:
                 while self._typing_token is token:
                     await self.api.send_chat_action(chat_id, "typing")
                     await asyncio.sleep(_TYPING_INTERVAL_S)
+                    if time.monotonic() - start > _TYPING_MAX_DURATION_S:
+                        # Rete morta / turno senza risposta finale: spegni
+                        # il typing invece di tenerlo acceso all'infinito.
+                        self._typing_token = object()
+                        break
             except asyncio.CancelledError:
                 pass
 
