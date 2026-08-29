@@ -523,8 +523,9 @@ class TestAutoCompactIdleDetection:
         assert "new session started" in response.text.lower()
 
         session_after = loop.sessions.get_or_create("internal:test")
-        # Session is empty (auto-new archived and cleared, /new cleared again)
-        assert len(session_after.messages) == 0
+        # Old session messages are preserved (archived, not cleared).
+        # /new now creates a genuinely new session instead of clearing the old one.
+        assert len(session_after.messages) == 8  # messages preserved
         await loop.close_background_tasks()
 
     @pytest.mark.asyncio

@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import secrets
+import time
+
 UNIFIED_SESSION_KEY = "unified:default"
+
+# Prefisso delle sessioni WebUI multiplo (``webui:<session_id>``).
+# Ogni sessione WebUI usa una chiave unica con questo prefisso.
+WEBUI_SESSION_PREFIX = "webui:"
 
 # Prefisso delle sessioni Tier-2 dei subagent (``subagent:<lineage_id>``).
 # Sono storia di lavoro interno, non conversazioni: non devono comparire in
@@ -50,6 +57,26 @@ def is_internal_session_key(key: str) -> bool:
 def subagent_session_key(lineage_id: str) -> str:
     """Session key della storia Tier-2 di un lineage."""
     return f"{SUBAGENT_SESSION_PREFIX}{lineage_id}"
+
+
+def new_session_key() -> str:
+    """Generate a unique session key for a new WebUI session.
+
+    Returns a key like ``webui:<timestamp>-<random>`` that is guaranteed
+    to be unique across all sessions.
+    """
+    ts = int(time.time() * 1000)
+    rand = secrets.token_hex(4)
+    return f"{WEBUI_SESSION_PREFIX}{ts}-{rand}"
+
+
+def is_webui_session_key(key: str) -> bool:
+    """True se la session key e' una sessione WebUI utente (non interna).
+
+    Include sia il formato legacy ``unified:default`` sia le sessioni
+    multipli ``webui:<id>``.
+    """
+    return key == UNIFIED_SESSION_KEY or key.startswith(WEBUI_SESSION_PREFIX)
 
 
 def session_key_for_channel(channel: str, chat_id: str) -> str:

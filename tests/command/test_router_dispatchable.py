@@ -95,7 +95,12 @@ class TestMidTurnCommandDispatchedDirectly:
     async def test_new_dispatched_with_session_none(
         self, router: CommandRouter, fake_loop: MagicMock, fake_msg: MagicMock,
     ) -> None:
-        """cmd_new works when session=None (mid-turn dispatch path)."""
+        """cmd_new works when session=None (mid-turn dispatch path).
+
+        Now creates a genuinely new session with a unique key instead of
+        clearing the old one. get_or_create is called twice: once for the
+        old session, once for the new session.
+        """
         ctx = CommandContext(
             msg=fake_msg, session=None,
             key="test:chat1", raw="/new", loop=fake_loop,
@@ -103,7 +108,13 @@ class TestMidTurnCommandDispatchedDirectly:
         result = await router.dispatch(ctx)
         assert result is not None
         assert "New session" in result.content
-        fake_loop.sessions.get_or_create.assert_called_once_with("test:chat1")
+        # Called for old session + new session
+        assert fake_loop.sessions.get_or_create.call_count == 2
+        # The first call is for the old session key
+        fake_loop.sessions.get_or_create.assert_any_call("test:chat1")
+        # The second call is for the new session (webui: prefix)
+        new_call = fake_loop.sessions.get_or_create.call_args_list[1]
+        assert new_call[0][0].startswith("webui:")
 
     @pytest.mark.asyncio
     async def test_help_dispatched_with_session_none(

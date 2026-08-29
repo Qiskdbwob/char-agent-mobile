@@ -70,6 +70,7 @@ _HARDCODED_TOOL_MODULES = [
     "self",
     "search",
     "search_history",
+    "search_sessions",
     "message",
     "apply_patch",
     "exec_session",
