@@ -157,7 +157,12 @@ class TestCmdNewUnifiedSession:
 
     @pytest.mark.asyncio
     async def test_cmd_new_clears_unified_session(self, tmp_path: Path):
-        """cmd_new called with key='unified:default' clears the shared session."""
+        """cmd_new called with key='unified:default' creates a new session.
+
+        The old session is preserved on disk (archived) and a new session
+        with a unique key is created. The metadata includes _session_switch
+        and _new_session_key for the client to switch.
+        """
         sessions = SessionManager(tmp_path)
 
         # Pre-populate the shared session with some messages
@@ -186,14 +191,22 @@ class TestCmdNewUnifiedSession:
         result = await cmd_new(ctx)
 
         assert "New session started" in result.content
-        # Invalidate cache and reload from disk to confirm persistence
+        # Old session messages are preserved (archived, not cleared)
         sessions.invalidate("unified:default")
         reloaded = sessions.get_or_create("unified:default")
-        assert reloaded.messages == []
+        assert len(reloaded.messages) == 2  # messages preserved
+        # A new session was created with a unique key
+        assert result.metadata.get("_session_switch") is True
+        new_key = result.metadata.get("_new_session_key")
+        assert new_key is not None
+        assert new_key != "unified:default"
+        # The new session exists and is empty
+        new_session = sessions.get_or_create(new_key)
+        assert new_session.messages == []
 
     @pytest.mark.asyncio
     async def test_cmd_new_in_unified_mode_does_not_affect_other_sessions(self, tmp_path: Path):
-        """Clearing unified:default must not touch other sessions on disk."""
+        """Creating a new session must not touch other sessions on disk."""
         sessions = SessionManager(tmp_path)
 
         other = sessions.get_or_create("websocket:999")
@@ -220,7 +233,9 @@ class TestCmdNewUnifiedSession:
 
         sessions.invalidate("unified:default")
         sessions.invalidate("websocket:999")
-        assert sessions.get_or_create("unified:default").messages == []
+        # Old session messages preserved
+        assert len(sessions.get_or_create("unified:default").messages) == 1
+        # Other sessions untouched
         assert len(sessions.get_or_create("websocket:999").messages) == 1
 
 

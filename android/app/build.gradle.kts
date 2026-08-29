@@ -50,8 +50,8 @@ android {
         // versionCode must increase monotonically on every published build.
         // versionName tracks the Python package version in pyproject.toml —
         // keep the two in sync when releasing.
-        versionCode = 14
-        versionName = "0.8.0"
+        versionCode = 15
+        versionName = "1.8.3"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")

@@ -10,6 +10,7 @@ from typing import Any
 
 from loguru import logger
 
+from jenny.session.keys import is_webui_session_key
 from jenny.utils.helpers import (
     channel_delivery_aware_user_start,
     ensure_dir,
@@ -523,6 +524,50 @@ class SessionManager:
     def invalidate(self, key: str) -> None:
         """Remove a session from the in-memory cache."""
         self._cache.pop(key, None)
+
+    def list_user_sessions(self, *, include_metadata: bool = True) -> list[dict[str, Any]]:
+        """List all user-facing sessions sorted by most recently updated.
+
+        Returns a list of dicts with ``key``, ``title``, ``created_at``,
+        ``updated_at``, ``message_count``, and optionally the full ``metadata``.
+        Internal sessions (cron, dream, atlas, subagent, heartbeat) are
+        excluded.
+
+        Metadata is read from disk (``read_session_metadata``) when
+        *include_metadata* is ``True``; otherwise only the key is returned
+        (useful for lightweight listings where the caller will load
+        sessions lazily).
+        """
+        results: list[dict[str, Any]] = []
+        for path in self.sessions_dir.glob("*.jsonl"):
+            stem = path.stem
+            # Recover the original key: safe_key replaces ':' with '_';
+            # only the first colon is meaningful (e.g. ``webui:abc``).
+            key = stem.replace("_", ":", 1)
+            if not is_webui_session_key(key):
+                continue
+            if include_metadata:
+                meta = self.read_session_metadata(key)
+                if meta is None:
+                    # Session file is corrupt or empty; skip it.
+                    continue
+                results.append(meta)
+            else:
+                # Lightweight mode: read only metadata record.
+                meta = self.read_session_metadata(key)
+                if meta is None:
+                    continue
+                results.append({
+                    "key": key,
+                    "created_at": meta.get("created_at"),
+                    "updated_at": meta.get("updated_at"),
+                })
+        # Sort by updated_at descending (most recent first).
+        results.sort(
+            key=lambda s: s.get("updated_at") or "",
+            reverse=True,
+        )
+        return results
 
     def read_session_file(self, key: str) -> dict[str, Any] | None:
         """Load a session from disk without caching; intended for read-only HTTP endpoints.

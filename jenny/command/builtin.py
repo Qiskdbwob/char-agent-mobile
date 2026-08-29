@@ -95,6 +95,12 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "puzzle",
     ),
     BuiltinCommandSpec(
+        "/sessions",
+        "List sessions",
+        "Show all chat sessions with titles and message counts.",
+        "messages",
+    ),
+    BuiltinCommandSpec(
         "/help",
         "Show help",
         "List available slash commands.",
@@ -153,7 +159,14 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
 
 
 async def cmd_new(ctx: CommandContext) -> OutboundMessage:
-    """Stop active task and start a fresh session."""
+    """Stop active task and archive the current session, then create a new one.
+
+    The old session is preserved on disk with all its messages. A new session
+    with a unique key is created, and the client is instructed to switch to it
+    via the ``_session_switch`` metadata event.
+    """
+    from jenny.session.keys import new_session_key
+
     loop = ctx.loop
     cancelled = await loop._cancel_active_tasks(ctx.key)
     if cancelled:
@@ -161,22 +174,30 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
         # snapshot, così finisce nell'archivio invece di andare perso.
         loop._restore_cancelled_turn(ctx.key)
         await loop._emit_stop_turn_end(ctx.msg, ctx.key)
-    session = ctx.session or loop.sessions.get_or_create(ctx.key)
-    snapshot = session.messages[session.last_consolidated:]
-    session.clear()
-    loop.sessions.save(session)
-    loop.sessions.invalidate(session.key)
+    # Archive the old session's unconsolidated messages to history.
+    old_session = ctx.session or loop.sessions.get_or_create(ctx.key)
+    snapshot = old_session.messages[old_session.last_consolidated:]
     if snapshot:
-        loop._schedule_background(loop.consolidator.archive(snapshot, session_key=ctx.key))
+        loop._schedule_background(
+            loop.consolidator.archive(snapshot, session_key=ctx.key)
+        )
+    # Create a genuinely new session with a unique key.
+    new_key = new_session_key()
+    new_session = loop.sessions.get_or_create(new_key)
+    new_session.metadata["webui"] = True
+    loop.sessions.save(new_session)
     return OutboundMessage(
         channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
         content="New session started.",
-        # `_session_boundary` dice ai client di rendere questa conferma come
-        # separatore invece che come bolla. Il transcript NON viene toccato da
-        # /new (si azzera il contesto del modello, non il registro visibile):
-        # senza un confine esplicito la conversazione prosegue a schermo come
-        # se il comando fosse stato ignorato.
-        metadata={**dict(ctx.msg.metadata or {}), "_session_boundary": True},
+        metadata={
+            **dict(ctx.msg.metadata or {}),
+            "_session_boundary": True,
+            # _session_switch tells the WebUI client to switch to the new
+            # session key. The client stores this mapping and includes the
+            # session_key_override in subsequent messages.
+            "_session_switch": True,
+            "_new_session_key": new_key,
+        },
     )
 
 
@@ -577,6 +598,39 @@ async def cmd_skill(ctx: CommandContext) -> OutboundMessage:
         metadata=dict(ctx.msg.metadata or {}),
     )
 
+async def cmd_sessions(ctx: CommandContext) -> OutboundMessage:
+    """List all user sessions with titles and metadata.
+
+    Usage: /sessions
+    """
+    loop = ctx.loop
+    sessions = loop.sessions.list_user_sessions()
+    if not sessions:
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content="No sessions found.",
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+    current_key = ctx.key
+    lines = [f"Sessions ({len(sessions)}):", ""]
+    for s in sessions:
+        key = s.get("key", "?")
+        title = s.get("metadata", {}).get("title") or "(untitled)"
+        updated = s.get("updated_at", "")
+        msg_count = len(
+            loop.sessions.get_or_create(key).get_history(max_messages=0)
+        )
+        marker = " →" if key == current_key else "  "
+        lines.append(
+            f"{marker} {title}  [{msg_count} msgs, updated {updated[:10]}]"
+        )
+    return OutboundMessage(
+        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+        content="\n".join(lines),
+        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+    )
+
+
 async def cmd_help(ctx: CommandContext) -> OutboundMessage:
     """Return available slash commands."""
     return OutboundMessage(
@@ -612,5 +666,6 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/dream", cmd_dream)
     router.exact("/atlas", cmd_atlas)
     router.prefix("/atlas ", cmd_atlas)
+    router.exact("/sessions", cmd_sessions)
     router.exact("/skill", cmd_skill)
     router.exact("/help", cmd_help)

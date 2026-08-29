@@ -534,7 +534,8 @@ class TestNewCommandArchival:
         assert "new session started" in response.text.lower()
 
         session_after = loop.sessions.get_or_create("internal:test")
-        assert len(session_after.messages) == 0
+        # Old session messages are preserved (archived, not cleared)
+        assert len(session_after.messages) == 10  # messages preserved
 
         await loop.close_background_tasks()
         assert call_count == 1
@@ -594,7 +595,8 @@ class TestNewCommandArchival:
 
         assert response.message is not None
         assert "new session started" in response.text.lower()
-        assert loop.sessions.get_or_create("internal:test").messages == []
+        # Old session messages are preserved (archived, not cleared)
+        assert len(loop.sessions.get_or_create("internal:test").messages) == 6
 
     @pytest.mark.asyncio
     async def test_close_background_tasks_drains_background_tasks(self, tmp_path: Path) -> None:
