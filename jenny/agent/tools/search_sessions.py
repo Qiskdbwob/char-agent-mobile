@@ -50,6 +50,20 @@ class SearchSessionsTool(Tool):
                 minimum=1,
                 maximum=20,
             ),
+            context_lines=IntegerSchema(
+                description=(
+                    "Number of context lines around matches in message search "
+                    "(default: 2, max: 10). Shows surrounding messages."
+                ),
+                minimum=0,
+                maximum=10,
+            ),
+            session_key=StringSchema(
+                description=(
+                    "Optional: limit search to a specific session key. "
+                    "If not provided, searches all sessions."
+                ),
+            ),
         )
 
     def __init__(self, workspace: Path | None = None):
@@ -58,6 +72,8 @@ class SearchSessionsTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         query = kwargs.get("query", "").strip()
         max_results = min(kwargs.get("max_results", 5), 20)
+        context_lines = min(kwargs.get("context_lines", 2), 10)
+        session_key_filter = kwargs.get("session_key", "").strip()
 
         if not query:
             return "Error: search query is required"
@@ -71,7 +87,11 @@ class SearchSessionsTool(Tool):
             return "No sessions directory found."
 
         try:
-            results = self._search_sessions(sessions_dir, query, max_results)
+            results = self._search_sessions(
+                sessions_dir, query, max_results,
+                context_lines=context_lines,
+                session_key_filter=session_key_filter,
+            )
             if not results:
                 return f"No results found for '{query}' across sessions."
 
@@ -80,8 +100,11 @@ class SearchSessionsTool(Tool):
                 key = result.get("key", "?")
                 title = result.get("title", "(untitled)")
                 updated = result.get("updated_at", "?")[:10]
+                msg_count = result.get("msg_count", "?")
                 snippet = result.get("snippet", "")
-                output_lines.append(f"{i}. {title} ({updated}) — session: {key}")
+                output_lines.append(
+                    f"{i}. {title} ({updated}, {msg_count} msgs) — session: {key}"
+                )
                 if snippet:
                     output_lines.append(f"   \"{snippet}\"")
                 output_lines.append("")
@@ -93,7 +116,13 @@ class SearchSessionsTool(Tool):
             return f"Error searching sessions: {e}"
 
     def _search_sessions(
-        self, sessions_dir: Path, query: str, max_results: int
+        self,
+        sessions_dir: Path,
+        query: str,
+        max_results: int,
+        *,
+        context_lines: int = 2,
+        session_key_filter: str = "",
     ) -> list[dict[str, Any]]:
         """Search session files for entries matching the query."""
         results: list[dict[str, Any]] = []
@@ -104,8 +133,12 @@ class SearchSessionsTool(Tool):
             key = stem.replace("_", ":", 1)
             if not is_webui_session_key(key):
                 continue
+            if session_key_filter and session_key_filter != key:
+                continue
 
-            result = self._search_single_session(path, key, query_lower)
+            result = self._search_single_session(
+                path, key, query_lower, context_lines=context_lines,
+            )
             if result is not None:
                 results.append(result)
                 if len(results) >= max_results:
@@ -116,7 +149,12 @@ class SearchSessionsTool(Tool):
         return results
 
     def _search_single_session(
-        self, path: Path, key: str, query_lower: str
+        self,
+        path: Path,
+        key: str,
+        query_lower: str,
+        *,
+        context_lines: int = 2,
     ) -> dict[str, Any] | None:
         """Search a single session file for the query."""
         try:
@@ -149,6 +187,7 @@ class SearchSessionsTool(Tool):
                     "key": key,
                     "title": title,
                     "updated_at": metadata_record.get("updated_at", ""),
+                    "msg_count": len(messages),
                     "snippet": f"Title matches: {title}",
                 }
 
@@ -166,27 +205,47 @@ class SearchSessionsTool(Tool):
                     "key": key,
                     "title": title or "(untitled)",
                     "updated_at": metadata_record.get("updated_at", ""),
+                    "msg_count": len(messages),
                     "snippet": snippet,
                 }
 
-            # Check message content (search from most recent backwards)
-            for msg in reversed(messages):
+            # Check message content with context window
+            for idx, msg in enumerate(reversed(messages)):
                 content = msg.get("content", "")
                 if not isinstance(content, str):
                     continue
                 if query_lower in content.lower():
-                    idx = content.lower().index(query_lower)
-                    start = max(0, idx - 40)
-                    end = min(len(content), idx + len(query_lower) + 40)
-                    snippet = content[start:end]
-                    if start > 0:
+                    pos = content.lower().index(query_lower)
+                    snippet_start = max(0, pos - 40)
+                    snippet_end = min(len(content), pos + len(query_lower) + 40)
+                    snippet = content[snippet_start:snippet_end]
+                    if snippet_start > 0:
                         snippet = "..." + snippet
-                    if end < len(content):
+                    if snippet_end < len(content):
                         snippet = snippet + "..."
+
+                    # Add surrounding message context if requested
+                    if context_lines > 0 and len(messages) > 1:
+                        actual_idx = len(messages) - 1 - idx
+                        ctx_before = max(0, actual_idx - context_lines)
+                        ctx_after = min(len(messages), actual_idx + context_lines + 1)
+                        context_parts = []
+                        for cmsg in messages[ctx_before:ctx_after]:
+                            crole = cmsg.get("role", "?")
+                            ccontent = cmsg.get("content", "")
+                            if isinstance(ccontent, str) and ccontent:
+                                if len(ccontent) > 80:
+                                    ccontent = ccontent[:80] + "..."
+                                marker = " >>" if cmsg is msg else "   "
+                                context_parts.append(f"{marker} [{crole}] {ccontent}")
+                        if context_parts:
+                            snippet += "\n    Context:\n    " + "\n    ".join(context_parts)
+
                     return {
                         "key": key,
                         "title": title or "(untitled)",
                         "updated_at": metadata_record.get("updated_at", ""),
+                        "msg_count": len(messages),
                         "snippet": snippet,
                     }
 
